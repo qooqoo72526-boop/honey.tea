@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Mirror Neuron | Final Screenshot Match</title>
+    <style>
+        :root {
+            /* 調整這三個數字來對齊妳的畫面 */
+            --bird-scale: 850px; /* 阿金放大，符合截圖比例 */
+            --bird-x: 50%;       /* 水平置中 */
+            --bird-y: 65%;       /* 垂直位置 (配合地板) */
+        }
+
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; }
+
+        #stage {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: url('assets/all.webp') no-repeat center center;
+            background-size: cover;
+            /* 背景稍微壓一點點暗，讓阿金亮起來 */
+            filter: contrast(1.1) brightness(0.9);
+            overflow: hidden;
+        }
+
+        /* =========================================
+           1. 膠囊型遮擋層 (符合身形，不再是圓形黑坨)
+           ========================================= */
+        .agent-capsule-blocker {
+            position: absolute;
+            top: var(--bird-y); left: var(--bird-x);
+            transform: translate(-50%, -50%);
+            
+            /* 【關鍵修改】改成直立的長橢圓，貼合鳥身 */
+            width: 300px; height: 550px; 
+            
+            /* 使用深紫靛色，跟地板的反光融合 */
+            background: radial-gradient(ellipse at center, #0e001a 50%, transparent 80%);
+            
+            /* 模糊度適中，讓它看起來像自然的影子 */
+            filter: blur(35px);
+            z-index: 998; 
+            pointer-events: none;
+            opacity: 1.0;
+        }
+
+        /* =========================================
+           2. 阿金 (截圖還原參數)
+           ========================================= */
+        .ahjin-agent {
+            position: absolute;
+            top: var(--bird-y); left: var(--bird-x);
+            transform: translate(-50%, -50%);
+            width: var(--bird-scale); height: auto;
+            z-index: 999; pointer-events: none; 
+            
+            mix-blend-mode: screen; 
+            
+            /* 【還原截圖的乾淨質感】 */
+            /* 不加重口味對比，只求乾淨 */
+            /* brightness 105%: 去除灰感，變白 */
+            /* saturate 120%: 微微補色，不變螢光 */
+            filter: brightness(105%) contrast(105%) saturate(120%);
+            
+            opacity: 1.0;
+
+            /* 邊緣柔和去框 */
+            -webkit-mask-image: radial-gradient(closest-side, black 65%, transparent 98%);
+            mask-image: radial-gradient(closest-side, black 65%, transparent 98%);
+        }
+
+        /* =========================================
+           3. 環境氛圍
+           ========================================= */
+        .star-layer { position: absolute; top: 0; left: 0; width: 100%; height: 50%; mix-blend-mode: screen; pointer-events: none; }
+        .nebula-flow { background-image: radial-gradient(circle at 30% 40%, rgba(189, 0, 255, 0.3), transparent 50%), radial-gradient(circle at 70% 60%, rgba(0, 242, 255, 0.2), transparent 50%); filter: blur(30px); opacity: 0.6; animation: nebulaMove 30s ease-in-out infinite alternate; }
+        .stars-twinkle { background-image: radial-gradient(2px 2px at 10% 10%, white, transparent), radial-gradient(2px 2px at 20% 30%, white, transparent), radial-gradient(3px 3px at 80% 20%, white, transparent), radial-gradient(1px 1px at 50% 50%, white, transparent); background-size: 300px 300px; opacity: 0.9; animation: starTwinkle 4s ease-in-out infinite; }
+        
+        .sign-glow { position: absolute; top: 10%; left: 15%; width: 35%; height: 12%; background: linear-gradient(to right, var(--neon-purple), var(--neon-core)); mix-blend-mode: overlay; filter: blur(25px); opacity: 0.6; animation: breatheSoft 5s infinite alternate; }
+        .door-glow { position: absolute; top: 40%; right: 13%; width: 15%; height: 50%; background: radial-gradient(ellipse at center, rgba(255, 215, 0, 0.3), transparent 70%); mix-blend-mode: screen; filter: blur(20px); opacity: 0.5; animation: breatheSoft 3s infinite alternate-reverse; }
+        .floor-energy { position: absolute; top: 60%; left: 0; width: 100%; height: 40%; background: repeating-linear-gradient(110deg, transparent 0%, transparent 45%, rgba(0, 242, 255, 0.1) 48%, rgba(189, 0, 255, 0.1) 50%, rgba(0, 242, 255, 0.1) 52%, transparent 55%, transparent 100%); background-size: 200% 200%; mix-blend-mode: screen; opacity: 0.4; transform: perspective(1000px) rotateX(60deg); animation: floorFlow 8s linear infinite; pointer-events: none; }
+
+        /* =========================================
+           4. 機器組 (維持)
+           ========================================= */
+        .center-machine-group { position: absolute; top: 55.5%; left: 42.5%; transform: translate(-50%, -50%); width: 268px; height: 268px; z-index: 10; cursor: pointer; }
+        .ring-mask { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; background: radial-gradient(circle at center, var(--neon-core) 0%, transparent 45%); opacity: 0.1; box-shadow: none; transition: all 0.5s; animation: coreStandbyBreathe 4s ease-in-out infinite; }
+        .scan-container { position: absolute; inset: 0; opacity: 0; transition: opacity 0.5s; overflow: hidden; border-radius: 50%; }
+        .center-machine-group.active .scan-container { opacity: 1; }
+        .radar-scan-cw { position: absolute; top: 11%; left: 14.5%; width: 74%; height: 74%; border-radius: 50%; background: conic-gradient(from 0deg, transparent 0%, transparent 80%, rgba(0, 242, 255, 0.3) 100%); mix-blend-mode: screen; animation: ritualSpinCW 4s cubic-bezier(0.65, 0, 0.35, 1) infinite; }
+        .radar-scan-ccw { position: absolute; top: 11%; left: 14.5%; width: 74%; height: 74%; border-radius: 50%; background: conic-gradient(from 180deg, transparent 0%, transparent 85%, rgba(255, 255, 255, 0.15) 100%); mix-blend-mode: overlay; animation: ritualSpinCCW 6s linear infinite; }
+        .scan-particles { position: absolute; top: 11%; left: 14.5%; width: 74%; height: 74%; border-radius: 50%; background-image: radial-gradient(rgba(0, 242, 255, 0.4) 1px, transparent 1px); background-size: 10px 10px; mix-blend-mode: screen; opacity: 0.3; animation: particleFlicker 0.2s infinite alternate; }
+        .scanner-beam { position: absolute; top: 50%; left: 32.5%; width: 35%; height: 2px; background: linear-gradient(90deg, transparent 0%, rgba(0, 242, 255, 0.2) 20%, rgba(200, 255, 255, 0.9) 50%, rgba(0, 242, 255, 0.2) 80%, transparent 100%); box-shadow: 0 0 15px 1px var(--neon-core); mix-blend-mode: screen; opacity: 0; border-radius: 50%; }
+        .center-machine-group.active .scanner-beam { opacity: 1; animation: scanPingPongVariable 1.6s ease-in-out infinite alternate; }
+        .center-machine-group.active .ring-mask { animation: activeRingBreath 2s ease-in-out infinite; background: radial-gradient(circle at center, rgba(0, 242, 255, 0.15) 0%, transparent 65%); border: 1px solid rgba(0, 242, 255, 0.15); }
+        .holo-base-visible { position: absolute; top: 85%; left: 42.5%; width: 420px; height: 300px; transform: translate(-50%, -50%) perspective(1000px) rotateX(80deg); pointer-events: none; background-image: radial-gradient(circle, rgba(0, 242, 255, 0.15) 0%, transparent 60%), linear-gradient(rgba(0, 242, 255, 0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 242, 255, 0.15) 1px, transparent 1px); background-size: 100% 100%, 40px 40px, 40px 40px; mask-image: radial-gradient(ellipse at center, black 40%, transparent 80%); opacity: 0.85; animation: basePulseSmooth 4s infinite alternate; }
+
+        /* 動畫庫 */
+        @keyframes nebulaMove { 0% { transform: translateX(-2%) translateY(-2%); } 100% { transform: translateX(2%) translateY(2%); } }
+        @keyframes starTwinkle { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+        @keyframes breatheSoft { 0% { opacity: 0.4; filter: blur(25px); } 100% { opacity: 0.7; filter: blur(30px); } }
+        @keyframes floorFlow { 0% { background-position: 0 0; } 100% { background-position: 200% 0; } }
+        @keyframes coreStandbyBreathe { 0%, 100% { opacity: 0.1; transform: scale(0.8); } 50% { opacity: 0.8; transform: scale(1.0); filter: drop-shadow(0 0 8px var(--neon-core)); } }
+        @keyframes activeRingBreath { 0%, 100% { opacity: 0.5; box-shadow: inset 0 0 10px rgba(0, 242, 255, 0.1); } 50% { opacity: 0.8; box-shadow: inset 0 0 30px rgba(0, 242, 255, 0.4); } }
+        @keyframes ritualSpinCW { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes ritualSpinCCW { from { transform: rotate(360deg); } to { transform: rotate(0deg); } }
+        @keyframes particleFlicker { 0% { opacity: 0.2; } 100% { opacity: 0.4; } }
+        @keyframes scanPingPongVariable { 0% { top: 24%; opacity: 0.5; animation-timing-function: cubic-bezier(0.5, 0, 1, 0.5); } 50% { top: 76%; opacity: 1; animation-timing-function: cubic-bezier(0, 0.5, 0.5, 1); } 100% { top: 24%; opacity: 0.5; } }
+        @keyframes basePulseSmooth { 0%, 100% { opacity: 0.85; } 50% { opacity: 1.0; } }
+
+        #cursor { position: fixed; width: 22px; height: 22px; border: 1.5px solid var(--cursor-gold); border-radius: 50%; z-index: 9999; transform: translate(-50%, -50%); pointer-events: none; }
+        #aura { position: fixed; width: 600px; height: 600px; background: radial-gradient(circle, rgba(180, 0, 255, 0.05) 0%, transparent 60%); z-index: 9998; transform: translate(-50%, -50%); pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div id="cursor"></div>
+    <div id="aura"></div>
+
+    <div class="agent-capsule-blocker"></div>
+
+    <video class="ahjin-agent" src="assets/ajin.mp4" autoplay loop muted playsinline id="ajinVideo"></video>
+
+    <div id="stage">
+        <div class="star-layer nebula-flow"></div>
+        <div class="star-layer stars-twinkle"></div>
+        <div class="sign-glow"></div>
+        <div class="door-glow"></div>
+        <div class="floor-energy"></div>
+
+        <div class="center-machine-group" id="scanner">
+            <div class="ring-mask"></div>
+            <div class="scan-container">
+                <div class="radar-scan-cw"></div>
+                <div class="radar-scan-ccw"></div>
+                <div class="scan-particles"></div>
+                <div class="scanner-beam"></div>
+            </div>
+        </div>
+        <div class="holo-base-visible"></div>
+    </div>
+
+    <script>
+        const stage = document.getElementById('stage');
+        const cursor = document.getElementById('cursor');
+        const aura = document.getElementById('aura');
+        const scanner = document.getElementById('scanner');
+        const ajinVideo = document.getElementById('ajinVideo');
+        
+        let tx = 0, ty = 0, cx = 0, cy = 0;
+        
+        // 強制確保影片循環播放 (防止瀏覽器暫停)
+        ajinVideo.addEventListener('ended', function() {
+            this.currentTime = 0;
+            this.play();
+        }, false);
+
+        document.addEventListener('mousemove', (e) => {
+            cursor.style.left = e.clientX + 'px'; cursor.style.top = e.clientY + 'px';
+            aura.style.left = e.clientX + 'px'; aura.style.top = e.clientY + 'px';
+            tx = (e.clientX - window.innerWidth / 2) / 140; ty = (e.clientY - window.innerHeight / 2) / 140;
+        });
+
+        scanner.addEventListener('click', () => {
+            scanner.classList.toggle('active');
+            cursor.style.transform = 'translate(-50%, -50%) scale(0.8)';
+            setTimeout(() => cursor.style.transform = 'translate(-50%, -50%) scale(1)', 150);
+        });
+
+        function animate() {
+            cx += (tx - cx) * 0.015; cy += (ty - cy) * 0.015;
+            stage.style.transform = `translate3d(${cx}px, ${cy}px, 0)`;
+            requestAnimationFrame(animate);
+        }
+        animate();
+    </script>
+</body>
+</html>
