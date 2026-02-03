@@ -173,5 +173,56 @@
         }
         animate();
     </script>
+    <script src="/assets/scan-ui.js"></script>
+<script>
+  import("/assets/scan-ui.js").then(m => m.initScanUI());
+</script>
+    // ===== HONEY.TEA | Connect Scan API =====
+
+// Upload Photo（U）— 上傳 3 張照片
+const uploadBtn = document.getElementById("uploadBtn");
+if (uploadBtn) {
+  uploadBtn.addEventListener("change", async (e) => {
+    const files = e.target.files;
+    if (!files || files.length !== 3) {
+      alert("請上傳 3 張不同角度的照片（正面 / 左側 / 右側）");
+      return;
+    }
+    await runScan(files);
+  });
+}
+
+// Begin Analysis（B）— 拍照 or 掃描後送出
+async function runScan(files) {
+  const formData = new FormData();
+  formData.append("image1", files[0]);
+  formData.append("image2", files[1]);
+  formData.append("image3", files[2]);
+
+  // 沉靜掃描狀態（你之後可以加動畫）
+  document.body.classList.add("scanning");
+
+  try {
+    const res = await fetch("/api/scan", {
+      method: "POST",
+      body: formData
+    });
+
+    if (!res.ok) throw new Error("Scan failed");
+
+    const data = await res.json();
+    console.log("SCAN RESULT:", data);
+
+    // TODO：下一步把 data.cards 渲染成高級卡片
+    // 這裡目前先確認「真的接到了」
+
+  } catch (err) {
+    console.error(err);
+    alert("分析失敗，請確認照片清晰且光線正常");
+  } finally {
+    document.body.classList.remove("scanning");
+  }
+}
 </body>
+
 </html>
