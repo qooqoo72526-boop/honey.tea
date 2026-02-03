@@ -221,9 +221,11 @@ async function runScan(files) {
 </body>
     </script>
     <script src="/assets/scan-ui.js"></script>
-<script>
-  import("/assets/scan-ui.js").then(m => m.initScanUI());
+<script type="module">
+  import { initScanUI } from "/assets/scan-ui.js";
+  initScanUI();
 </script>
 
 </html>
+
 
