@@ -3,7 +3,6 @@ export const config = {
   regions: ["sin1", "hnd1", "icn1"],
 };
 
-
 type MetricId =
   | "texture" | "pore" | "pigmentation" | "wrinkle"
   | "hydration" | "sebum" | "skintone" | "sensitivity"
@@ -38,15 +37,20 @@ function json(data: any, status = 200) {
 
 function nowId() { return `scan_${Date.now()}`; }
 
+/** ✅ 支援 1~3 張：image1 必填；image2/3 可選 */
 async function getFiles(form: FormData) {
-  // expects: image1, image2, image3 (保留你原本 3 張流程)
   const f1 = form.get("image1");
   const f2 = form.get("image2");
   const f3 = form.get("image3");
-  if (!(f1 instanceof File) || !(f2 instanceof File) || !(f3 instanceof File)) {
-    throw new Error("Missing images: image1/image2/image3 required");
+
+  if (!(f1 instanceof File)) {
+    throw new Error("Missing image1");
   }
-  return [f1, f2, f3] as File[];
+
+  const files: File[] = [f1];
+  if (f2 instanceof File) files.push(f2);
+  if (f3 instanceof File) files.push(f3);
+  return files;
 }
 
 async function toBytes(f: File) {
@@ -82,8 +86,7 @@ function quickPrecheck(bytes: Uint8Array) {
 }
 
 /* =========================
-   YouCam (Perfect Corp) — HD Skin Analysis (Single Photo)
-   Flow: file init -> PUT upload -> create task -> poll result
+   YouCam — HD Skin Analysis (Single Photo)
    ========================= */
 
 const YOUCAM_BASE = "https://yce-api-01.makeupar.com/s2s/v2.0";
@@ -140,6 +143,7 @@ async function youcamPutBinary(putUrl: string, fileBytes: Uint8Array, contentTyp
     method: "PUT",
     headers: {
       "Content-Type": contentType,
+      // Content-Length 在 edge 有時會被忽略，但保留不影響
       "Content-Length": String(fileBytes.length),
     },
     body: fileBytes,
@@ -216,7 +220,6 @@ async function youcamPollTask(taskId: string, maxMs = 65000) {
   throw new Error("YouCam task timeout");
 }
 
-// 你要的「最完整 HD 14 項」（全部 HD，不混 SD）
 const YOUCAM_HD_ACTIONS = [
   "hd_texture",
   "hd_pore",
@@ -234,17 +237,10 @@ const YOUCAM_HD_ACTIONS = [
   "hd_acne",
 ];
 
-/**
- * 把 YouCam 回傳解析成「可用的 score map」
- * 兼容兩種可能：
- * A) data.results.output[]（type/ui_score/raw_score/mask_urls）
- * B) data.results.score_info.json 風格（你貼的 score_info.json 結構）
- */
 function extractYoucamScores(j: any) {
   const out = j?.data?.results?.output;
   const map = new Map<string, { ui: number; raw: number; masks: string[] }>();
 
-  // A) results.output
   if (Array.isArray(out)) {
     for (const x of out) {
       const key = String(x.type);
@@ -256,11 +252,9 @@ function extractYoucamScores(j: any) {
     }
   }
 
-  // B) score_info.json-like object: j.data.results.score_info (若 API 有提供)
   const scoreInfo = j?.data?.results?.score_info ?? j?.data?.results?.scoreInfo;
   if (scoreInfo && typeof scoreInfo === "object") {
     for (const [k, v] of Object.entries(scoreInfo)) {
-      // v may be {raw_score, ui_score, output_mask_name} OR nested {whole:{...}}
       const vv: any = v;
       if (vv?.ui_score != null && vv?.raw_score != null) {
         map.set(k, {
@@ -275,7 +269,6 @@ function extractYoucamScores(j: any) {
           masks: vv.whole.output_mask_name ? [String(vv.whole.output_mask_name)] : [],
         });
       } else {
-        // handle nested regions like hd_pore.forehead/nose/cheek/whole, hd_wrinkle.forehead/crowfeet...
         for (const [subk, subv] of Object.entries(vv)) {
           const sv: any = subv;
           if (sv?.ui_score != null && sv?.raw_score != null) {
@@ -299,19 +292,6 @@ function clampScore(x: any) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-/**
- * 你原本的 14 指標（MetricId）是自定義的，我這裡把 YouCam HD 對到你這套：
- * - texture -> hd_texture (whole)
- * - pore -> hd_pore (whole / forehead / nose / cheek 如果拿得到就做細項)
- * - wrinkle -> hd_wrinkle (whole + 常見區域)
- * - hydration -> hd_moisture
- * - sebum -> hd_oiliness
- * - pigmentation -> hd_age_spot
- * - skintone / clarity / brightness -> hd_radiance（同一來源但不同敘事位置）
- * - redness / sensitivity -> hd_redness（同一來源但不同敘事位置）
- * - firmness / elasticity -> hd_firmness（同一來源但不同敘事位置）
- * - pores_depth -> 用 hd_pore.nose/whole 的 raw_score 當「深度感 proxy」（先高級呈現；之後你要再做更真實的深度模型）
- */
 function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>) {
   const get = (k: string, fallback?: string) => scoreMap.get(k) ?? (fallback ? scoreMap.get(fallback) : undefined);
 
@@ -323,13 +303,11 @@ function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number; mas
   const hd_redness = get("hd_redness") ?? get("redness");
   const hd_firmness = get("hd_firmness") ?? get("firmness");
 
-  // pore regions if present
   const pore_whole = get("hd_pore.whole") ?? get("hd_pore") ?? get("pore");
   const pore_forehead = get("hd_pore.forehead");
   const pore_nose = get("hd_pore.nose");
   const pore_cheek = get("hd_pore.cheek");
 
-  // wrinkle regions if present
   const wrk_whole = get("hd_wrinkle.whole") ?? get("hd_wrinkle") ?? get("wrinkle");
   const wrk_forehead = get("hd_wrinkle.forehead");
   const wrk_crowfeet = get("hd_wrinkle.crowfeet");
@@ -350,7 +328,6 @@ function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number; mas
   const PG = safe(hd_age_spot);
   const W = safe(wrk_whole);
 
-  // 給你原本 buildCards 需要的資料形狀：{score, details:[{en,zh,v}]}
   return {
     texture: {
       score: T.ui,
@@ -470,7 +447,6 @@ function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number; mas
     },
 
     pores_depth: {
-      // 先用 nose/whole 的 raw_score 當 proxy（高級呈現，後續你可自建深度模型）
       score: clampScore(pore_nose?.raw ?? pore_whole?.raw ?? P.raw),
       details: [
         { en: "Depth Proxy", zh: "深度代理值", v: Math.round((pore_nose?.raw ?? pore_whole?.raw ?? P.raw) * 100) / 100 },
@@ -482,130 +458,26 @@ function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number; mas
 }
 
 async function analyzeWithYouCamSingle(primaryFile: File) {
-  const apiKey = mustEnv("YOUCAM_API_KEY");
-
-  // 1) init upload meta
-  const initPayload = {
-    files: [
-      {
-        content_type: primaryFile.type || "image/jpeg",
-        file_name: (primaryFile as any).name || `skin_${Date.now()}.jpg`,
-        file_size: primaryFile.size,
-      },
-    ],
-  };
-
-  const initRes = await fetch(YOUCAM_FILE_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(initPayload),
-  });
-
-  const initJson = await initRes.json();
-  if (!initRes.ok || initJson.status !== 200) {
-    throw new Error(`YouCam file init failed: ${initRes.status} ${JSON.stringify(initJson)}`);
-  }
-
-  const f = initJson.data?.files?.[0];
-  const req = f?.requests?.[0];
-  if (!f?.file_id || !req?.url) throw new Error("YouCam file init missing file_id/upload url");
-
-  const fileId = f.file_id as string;
-  const putUrl = req.url as string;
-  const contentType = (f.content_type as string) || primaryFile.type || "image/jpeg";
-
-  // 2) PUT binary upload
+  const init = await youcamInitUpload(primaryFile);
   const buf = new Uint8Array(await primaryFile.arrayBuffer());
-  const putRes = await fetch(putUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": contentType,
-      "Content-Length": String(buf.length),
-    },
-    body: buf,
-  });
-  if (!putRes.ok) {
-    const t = await putRes.text().catch(() => "");
-    throw new Error(`YouCam PUT failed: ${putRes.status} ${t}`);
-  }
+  await youcamPutBinary(init.putUrl, buf, init.contentType);
 
-  // 3) create task
-  const taskPayload = {
-    src_file_id: fileId,
-    dst_actions: YOUCAM_HD_ACTIONS,
-    miniserver_args: {
-      enable_mask_overlay: false,
-      enable_dark_background_hd_pore: true,
-      color_dark_background_hd_pore: "3D3D3D",
-      opacity_dark_background_hd_pore: 0.4,
-    },
-    format: "json",
-  };
+  const taskId = await youcamCreateTask(init.fileId, YOUCAM_HD_ACTIONS);
+  const finalJson = await youcamPollTask(taskId);
 
-  const taskRes = await fetch(YOUCAM_TASK_CREATE, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(taskPayload),
-  });
-
-  const taskJson = await taskRes.json();
-  if (!taskRes.ok || taskJson.status !== 200 || !taskJson.data?.task_id) {
-    throw new Error(`YouCam task create failed: ${taskRes.status} ${JSON.stringify(taskJson)}`);
-  }
-
-  const taskId = taskJson.data.task_id as string;
-
-  // 4) poll
-  const start = Date.now();
-  let wait = 1200;
-  let finalJson: any = null;
-
-  while (Date.now() - start < 65000) {
-    const pollRes = await fetch(YOUCAM_TASK_GET(taskId), {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    const pollJson = await pollRes.json();
-    if (!pollRes.ok || pollJson.status !== 200) {
-      throw new Error(`YouCam poll failed: ${pollRes.status} ${JSON.stringify(pollJson)}`);
-    }
-
-    const st = pollJson.data?.task_status;
-    if (st === "success") { finalJson = pollJson; break; }
-    if (st === "error") throw new Error(`YouCam task error: ${JSON.stringify(pollJson.data)}`);
-
-    await sleep(wait);
-    wait = Math.min(wait * 1.6, 8000);
-  }
-
-  if (!finalJson) throw new Error("YouCam task timeout");
-
-  // 5) normalize -> your raw
   const scoreMap = extractYoucamScores(finalJson);
   const raw = mapYoucamToYourRaw(scoreMap);
 
   return {
     taskId,
     task_status: finalJson?.data?.task_status,
-    raw, // <- 符合你 buildCards(raw) 期待的格式
-    // masks/原始內容如果你要 debug，可以改成回傳出去（我先不回傳避免太重）
+    raw,
   };
 }
 
 /* =========================
-   Your cards (kept)
+   Your cards (kept) — 原封不動保留你的高級敘事
    ========================= */
-
 function buildCards(raw: any): Card[] {
   const cards: Card[] = [
     {
@@ -710,7 +582,6 @@ function buildCards(raw: any): Card[] {
 /* =========================
    Handler
    ========================= */
-
 export default async function handler(req: Request) {
   try {
     if (req.method === "OPTIONS") return json({}, 200);
@@ -718,18 +589,19 @@ export default async function handler(req: Request) {
 
     const form = await req.formData();
     const files = await getFiles(form);
-    const bytes = await Promise.all(files.map(toBytes));
 
-    // 預檢：3 張都檢查，給使用者高級提示
+    // ✅ 自動挑最大張當主圖（臉通常更大、更清楚）
+    files.sort((a, b) => b.size - a.size);
+    const primaryFile = files[0];
+
+    const bytes = await Promise.all(files.map(toBytes));
     const prechecks = bytes.map(quickPrecheck);
 
-    // YouCam：只用第一張（正面）跑「HD 14 指標」——最穩、最完整、成本最低
-    const youcam = await analyzeWithYouCamSingle(files[0]);
-
-    // 用你原本高級敘事卡直接生成
+    const youcam = await analyzeWithYouCamSingle(primaryFile);
     const cards = buildCards(youcam.raw);
 
     return json({
+      build: "honeytea_scan_edge_cam_v1",
       scanId: nowId(),
       precheck: {
         ok: prechecks.every(p => p.ok),
@@ -747,10 +619,47 @@ export default async function handler(req: Request) {
     });
 
   } catch (e: any) {
+    const msg = e?.message ?? String(e);
+
+    // ✅ YouCam 常見錯誤：臉太小 / 太暗 / 超出範圍 → 回高級重拍提示（200）
+    if (msg.includes("error_src_face_too_small")) {
+      return json({
+        error: "scan_retake",
+        code: "error_src_face_too_small",
+        tips: [
+          "鏡頭再靠近一點：臉部寬度需佔畫面 60–80%。",
+          "臉置中、正面直視，避免低頭/側臉。",
+          "額頭露出（瀏海撥開），避免眼鏡遮擋。",
+          "光線均勻：面向窗戶或柔光補光，避免背光。",
+        ],
+      }, 200);
+    }
+
+    if (msg.includes("error_lighting_dark")) {
+      return json({
+        error: "scan_retake",
+        code: "error_lighting_dark",
+        tips: [
+          "光線不足：請面向窗戶或補光燈，避免背光。",
+          "確保臉部明亮均勻，不要只有額頭亮或鼻翼反光。",
+        ],
+      }, 200);
+    }
+
+    if (msg.includes("error_src_face_out_of_bound")) {
+      return json({
+        error: "scan_retake",
+        code: "error_src_face_out_of_bound",
+        tips: [
+          "臉部超出範圍：請把臉放回畫面中心。",
+          "保持頭部穩定，避免左右大幅移動。",
+        ],
+      }, 200);
+    }
+
     return json({
       error: "scan_failed",
-      message: e?.message ?? String(e),
+      message: msg,
     }, 500);
   }
 }
-
