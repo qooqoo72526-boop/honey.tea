@@ -1,7 +1,8 @@
 export const config = {
-  runtime: "nodejs",
+  runtime: "edge",
   regions: ["sin1", "hnd1", "icn1"],
 };
+
 
 type MetricId =
   | "texture" | "pore" | "pigmentation" | "wrinkle"
