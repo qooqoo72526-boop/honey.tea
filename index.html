@@ -172,12 +172,7 @@
             requestAnimationFrame(animate);
         }
         animate();
-    </script>
-    <script src="/assets/scan-ui.js"></script>
-<script>
-  import("/assets/scan-ui.js").then(m => m.initScanUI());
-</script>
-    // ===== HONEY.TEA | Connect Scan API =====
+        // ===== HONEY.TEA | Connect Scan API =====
 
 // Upload Photo（U）— 上傳 3 張照片
 const uploadBtn = document.getElementById("uploadBtn");
@@ -224,5 +219,11 @@ async function runScan(files) {
   }
 }
 </body>
+    </script>
+    <script src="/assets/scan-ui.js"></script>
+<script>
+  import("/assets/scan-ui.js").then(m => m.initScanUI());
+</script>
 
 </html>
+
