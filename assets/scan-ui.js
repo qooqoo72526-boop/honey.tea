@@ -101,10 +101,35 @@ function renderResult(data) {
 }
 
 export function initScanUI() {
-  document.querySelectorAll("[data-scan]").forEach((btn) => {
-    btn.onclick = () => {
-      state.images = [];
-      createOverlay();
-    };
+  // 抓所有 CTA（Framer 的按鈕一定有 button role）
+  const buttons = Array.from(
+    document.querySelectorAll('a, button, [role="button"]')
+  );
+
+  // 用「文字」判斷是哪一顆（Framer 穩定可抓）
+  const beginBtn = buttons.find(b =>
+    b.textContent?.toLowerCase().includes("begin")
+  );
+
+  const uploadBtn = buttons.find(b =>
+    b.textContent?.toLowerCase().includes("upload")
+  );
+
+  if (!beginBtn || !uploadBtn) {
+    console.error("❌ Scan buttons not found");
+    return;
+  }
+
+  console.log("✅ Scan buttons linked");
+
+  beginBtn.addEventListener("click", e => {
+    e.preventDefault();
+    startScanFlow();
+  });
+
+  uploadBtn.addEventListener("click", e => {
+    e.preventDefault();
+    openUploadFlow();
   });
 }
+
