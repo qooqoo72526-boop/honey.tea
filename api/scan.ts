@@ -1,7 +1,4 @@
-export const config = {
-  runtime: "edge",
-  regions: ["sin1", "hnd1", "icn1"],
-};
+export const config = { runtime: "edge", regions: ["sin1", "hnd1", "icn1"] };
 
 type MetricId =
   | "texture" | "pore" | "pigmentation" | "wrinkle"
@@ -15,12 +12,15 @@ type Card = {
   score: number;
   max: 100;
 
-  // 你前端已經在用的欄位：保持不破壞
-  signal_en: string;         // EN 主敘事（長）
-  signal_zh: string;         // ZH 深層完整版（長）
+  signal_en: string; // EN 主敘事（長）
+  signal_zh_short: string;
+  signal_zh_deep: string;
+
   details: { label_en: string; label_zh: string; value: number | string }[];
+
   recommendation_en: string; // EN 建議（長）
-  recommendation_zh: string; // ZH 建議（長）
+  recommendation_zh_short: string;
+  recommendation_zh_deep: string;
 
   priority: number;
   confidence: number;
@@ -40,14 +40,18 @@ function json(data: any, status = 200) {
 
 function nowId() { return `scan_${Date.now()}`; }
 
+function mustEnv(name: string) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+
 /** ✅ 支援 1~3 張：image1 必填；image2/3 可選 */
 async function getFiles(form: FormData) {
   const f1 = form.get("image1");
   const f2 = form.get("image2");
   const f3 = form.get("image3");
-
   if (!(f1 instanceof File)) throw new Error("Missing image1");
-
   const files: File[] = [f1];
   if (f2 instanceof File) files.push(f2);
   if (f3 instanceof File) files.push(f3);
@@ -77,28 +81,19 @@ function quickPrecheck(bytes: Uint8Array) {
   if (avg > 185) { warnings.push("TOO_BRIGHT"); tips.push("Highlights are strong. Avoid direct overhead light."); }
 
   tips.push("Keep white balance neutral. Avoid warm indoor bulbs when possible.");
-
   return { ok: warnings.length === 0, avgSignal: avg, warnings, tips };
 }
 
 /* =========================
    YouCam — HD Skin Analysis
    ========================= */
-
 const YOUCAM_BASE = "https://yce-api-01.makeupar.com/s2s/v2.0";
 const YOUCAM_FILE_ENDPOINT = `${YOUCAM_BASE}/file/skin-analysis`;
 const YOUCAM_TASK_CREATE = `${YOUCAM_BASE}/task/skin-analysis`;
 const YOUCAM_TASK_GET = (taskId: string) => `${YOUCAM_BASE}/task/skin-analysis/${taskId}`;
 
-function mustEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-}
-
 async function youcamInitUpload(file: File) {
   const apiKey = mustEnv("YOUCAM_API_KEY");
-
   const payload = {
     files: [{
       content_type: file.type || "image/jpeg",
@@ -135,9 +130,14 @@ async function youcamPutBinary(putUrl: string, fileBytes: Uint8Array, contentTyp
   }
 }
 
+const YOUCAM_HD_ACTIONS = [
+  "hd_texture","hd_pore","hd_wrinkle","hd_redness","hd_oiliness","hd_age_spot","hd_radiance",
+  "hd_moisture","hd_dark_circle","hd_eye_bag","hd_droopy_upper_eyelid","hd_droopy_lower_eyelid",
+  "hd_firmness","hd_acne",
+];
+
 async function youcamCreateTask(srcFileId: string, dstActions: string[]) {
   const apiKey = mustEnv("YOUCAM_API_KEY");
-
   const payload = {
     src_file_id: srcFileId,
     dst_actions: dstActions,
@@ -190,12 +190,6 @@ async function youcamPollTask(taskId: string, maxMs = 65000) {
   throw new Error("YouCam task timeout");
 }
 
-const YOUCAM_HD_ACTIONS = [
-  "hd_texture","hd_pore","hd_wrinkle","hd_redness","hd_oiliness","hd_age_spot","hd_radiance",
-  "hd_moisture","hd_dark_circle","hd_eye_bag","hd_droopy_upper_eyelid","hd_droopy_lower_eyelid",
-  "hd_firmness","hd_acne",
-];
-
 function extractYoucamScores(j: any) {
   const out = j?.data?.results?.output;
   const map = new Map<string, { ui: number; raw: number; masks: string[] }>();
@@ -238,6 +232,7 @@ function clampScore(x: any) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
+/** 你已經有 mapYoucamToYourRaw，這裡保留你的版本就好。 */
 function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>) {
   const get = (k: string, fallback?: string) => scoreMap.get(k) ?? (fallback ? scoreMap.get(fallback) : undefined);
 
@@ -274,6 +269,7 @@ function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number; mas
   const PG = safe(hd_age_spot);
   const W = safe(wrk_whole);
 
+  // 這裡沿用你之前的 details（你範例有 Roughness/Smoothness/Evenness 等）
   return {
     texture: { score: T.ui, details: [{en:"Roughness",zh:"粗糙度",v:72},{en:"Smoothness",zh:"平滑度",v:64},{en:"Evenness",zh:"均勻度",v:68}] },
     pore: { score: P.ui, details: [{en:"T-Zone",zh:"T 區",v:pore_forehead?clampScore(pore_forehead.ui):88},{en:"Cheek",zh:"臉頰",v:pore_cheek?clampScore(pore_cheek.ui):95},{en:"Chin",zh:"下巴",v:93}] },
@@ -307,82 +303,14 @@ async function analyzeWithYouCamSingle(primaryFile: File) {
 }
 
 /* =========================
-   OpenAI: generate narratives (Structured Outputs)
+   Build metrics payload for OpenAI
    ========================= */
-
-function cardSchema() {
-  const metricEnum: MetricId[] = [
-    "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
-    "clarity","elasticity","redness","brightness","firmness","pores_depth",
-  ];
-
-  // JSON Schema for strict output
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: ["summary_en", "summary_zh", "cards"],
-    properties: {
-      summary_en: { type: "string", minLength: 40 },
-      summary_zh: { type: "string", minLength: 20 },
-      cards: {
-        type: "array",
-        minItems: 14,
-        maxItems: 14,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: [
-            "id","title_en","title_zh","score","max",
-            "signal_en","signal_zh","details",
-            "recommendation_en","recommendation_zh",
-            "priority","confidence",
-          ],
-          properties: {
-            id: { type: "string", enum: metricEnum },
-            title_en: { type: "string", minLength: 3 },
-            title_zh: { type: "string", minLength: 1 },
-            score: { type: "integer", minimum: 0, maximum: 100 },
-            max: { type: "integer", enum: [100] },
-
-            // 你要長篇：強制長度
-            signal_en: { type: "string", minLength: 180 },
-            signal_zh: { type: "string", minLength: 500 },
-
-            details: {
-              type: "array",
-              minItems: 3,
-              maxItems: 3,
-              items: {
-                type: "object",
-                additionalProperties: false,
-                required: ["label_en","label_zh","value"],
-                properties: {
-                  label_en: { type: "string" },
-                  label_zh: { type: "string" },
-                  value: { type: ["number","string"] },
-                },
-              },
-            },
-
-            recommendation_en: { type: "string", minLength: 120 },
-            recommendation_zh: { type: "string", minLength: 300 },
-
-            priority: { type: "integer", minimum: 1, maximum: 100 },
-            confidence: { type: "number", minimum: 0, maximum: 1 },
-          },
-        },
-      },
-    },
-  };
-}
-
 function buildMetricsPayload(raw: any) {
   const order: MetricId[] = [
     "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
     "clarity","elasticity","redness","brightness","firmness","pores_depth",
   ];
-
-  const baseTitle: Record<MetricId,[string,string]> = {
+  const titles: Record<MetricId,[string,string]> = {
     texture:["TEXTURE","紋理"],
     pore:["PORE","毛孔"],
     pigmentation:["PIGMENTATION","色素沉著"],
@@ -401,25 +329,91 @@ function buildMetricsPayload(raw: any) {
 
   return order.map((id) => {
     const m = raw[id];
-    const [en,zh] = baseTitle[id];
+    const [en,zh] = titles[id];
     return {
       id,
       title_en: en,
       title_zh: zh,
       score: m.score,
       details: (m.details || []).slice(0,3).map((d:any)=>({
-        label_en: d.en,
-        label_zh: d.zh,
-        value: d.v,
+        label_en: d.en, label_zh: d.zh, value: d.v
       })),
     };
   });
 }
 
-function extractStructuredJson(resp: any) {
-  // Try several shapes (SDK-less parsing)
-  if (resp?.output_parsed) return resp.output_parsed;
+/* =========================
+   OpenAI (structured JSON output)
+   ========================= */
+function schemaForOpenAI() {
+  const metricEnum: MetricId[] = [
+    "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
+    "clarity","elasticity","redness","brightness","firmness","pores_depth",
+  ];
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["summary_en","summary_zh","cards"],
+    properties: {
+      summary_en: { type: "string", minLength: 80 },
+      summary_zh: { type: "string", minLength: 40 },
+      cards: {
+        type: "array",
+        minItems: 14,
+        maxItems: 14,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "id","title_en","title_zh","score","max",
+            "signal_en","signal_zh_short","signal_zh_deep",
+            "details",
+            "recommendation_en","recommendation_zh_short","recommendation_zh_deep",
+            "priority","confidence",
+          ],
+          properties: {
+            id: { type: "string", enum: metricEnum },
+            title_en: { type: "string" },
+            title_zh: { type: "string" },
+            score: { type: "integer", minimum: 0, maximum: 100 },
+            max: { type: "integer", enum: [100] },
 
+            // ✅ 強制每張都長
+            signal_en: { type: "string", minLength: 260 },
+            signal_zh_short: { type: "string", minLength: 20 },
+            signal_zh_deep: { type: "string", minLength: 900 },
+
+            details: {
+              type: "array",
+              minItems: 3,
+              maxItems: 3,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["label_en","label_zh","value"],
+                properties: {
+                  label_en: { type: "string" },
+                  label_zh: { type: "string" },
+                  value: { type: ["number","string"] },
+                }
+              }
+            },
+
+            recommendation_en: { type: "string", minLength: 160 },
+            recommendation_zh_short: { type: "string", minLength: 16 },
+            recommendation_zh_deep: { type: "string", minLength: 420 },
+
+            priority: { type: "integer", minimum: 1, maximum: 100 },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+          }
+        }
+      }
+    }
+  };
+}
+
+function extractStructuredJson(resp: any) {
+  if (resp?.output_parsed) return resp.output_parsed;
   const out = resp?.output;
   if (Array.isArray(out)) {
     for (const item of out) {
@@ -427,9 +421,7 @@ function extractStructuredJson(resp: any) {
       if (Array.isArray(content)) {
         for (const c of content) {
           if (c?.type === "output_json" && c?.json) return c.json;
-          if (typeof c?.text === "string") {
-            try { return JSON.parse(c.text); } catch {}
-          }
+          if (typeof c?.text === "string") { try { return JSON.parse(c.text); } catch {} }
         }
       }
     }
@@ -437,45 +429,36 @@ function extractStructuredJson(resp: any) {
   throw new Error("OpenAI response parse failed");
 }
 
-async function generateCardsWithOpenAI(metrics: any[]) {
-  const openaiKey = mustEnv("OPENAI_API_KEY"); // 你說你已設定
-  const schema = cardSchema();
+async function generateReportWithOpenAI(metrics: any[]) {
+  const openaiKey = mustEnv("OPENAI_API_KEY");
+  const schema = schemaForOpenAI();
 
   const system = `
-You are HONEY.TEA · Skin Vision narrative engine.
+You are a high-end US-grade Skin Vision narrative engine.
 
-HARD RULES (must obey):
-- Use the provided metrics as ground truth. Do NOT change any score or detail values.
-- details must contain exactly the same 3 items per metric (same labels + values, same order).
-- Generate deep long-form narratives for ALL 14 metrics (EN primary + ZH deep).
-- Tone: US-grade product, calm, technical, not hype. Avoid neon/marketing slang.
-- Forbidden: "warning", "danger", "patient", "treatment", "disease", "cure". No medical claims.
-- Preferred terms: baseline, threshold, stability, variance, trajectory, cadence, cohort.
-- Output must follow the JSON schema strictly.
+Rules:
+- Use provided metrics as ground truth. Do NOT change score or detail values.
+- details must stay exactly the same labels + values + order.
+- Generate ALL 14 metrics with deep narratives.
+- No medical claims. No: warning, danger, patient, treatment, disease, cure.
+- Preferred: baseline, threshold, stability, variance, trajectory, cadence, cohort.
+- EN is primary; ZH includes short + deep full version.
 
-STRUCTURE per card (content guidance):
-- signal_en: multi-paragraph, includes: (1) 1-2 line verdict, (2) why it matters, (3) how to interpret the 3 details.
-- signal_zh: Chinese deep full version including:
-  【系統判斷說明】, 【細項數據如何被解讀】, 【系統建議（為什麼是這個建議）】
-- recommendation_en: 2-4 sentences, includes quantified expectation ONLY if framed as a model projection and not a guarantee.
-- recommendation_zh: Chinese deep recommendation, logic-first, consistency-first.
+Card structure:
+Title (EN/ZH), Score, Signal_EN (long), Signal_ZH_short, Signal_ZH_deep (with sections),
+Details (interpret each number), Recommendation_EN (long, quantified as projection), Recommendation_ZH_short + deep.
 
-Return 14 cards, one per metric id (no missing).
+Return strict JSON only.
 `.trim();
 
-  const user = `
-Metrics (ground truth):
-${JSON.stringify(metrics, null, 2)}
-
-Additional constraints:
-- Keep titles exactly as provided (title_en/title_zh).
-- max must be 100 for all.
-- priority: keep TEXTURE and HYDRATION highest, then order the rest descending (unique).
-- confidence: 0.78–0.92 depending on clarity of signal; do not exceed 0.92.
+  const user = `Metrics:\n${JSON.stringify(metrics, null, 2)}\n\nPriority rules:
+- TEXTURE and HYDRATION should rank highest.
+- priority must be unique descending.
+- confidence 0.78–0.92, do not exceed 0.92.
 `.trim();
 
   const body = {
-    model: "gpt-5.2", // latest model family supported in Responses API docs
+    model: "gpt-5.2",
     input: [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -488,87 +471,18 @@ Additional constraints:
         schema,
       },
     },
-    // 讓敘事每次有變化，但不亂：中低溫
     temperature: 0.6,
   };
 
   const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${openaiKey}`,
-      "Content-Type": "application/json",
-    },
+    headers: { "Authorization": `Bearer ${openaiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 
   const j = await r.json();
   if (!r.ok) throw new Error(`OpenAI error: ${r.status} ${JSON.stringify(j)}`);
-
   return extractStructuredJson(j);
-}
-
-/* =========================
-   Fallback buildCards (keep your current)
-   ========================= */
-function buildCards(raw: any): Card[] {
-  // 你原本的版本（保底）：我保持不改動
-  const cards: Card[] = [
-    {
-      id:"texture", title_en:"TEXTURE", title_zh:"紋理", score: raw.texture.score, max:100,
-      signal_en:"Your texture signal sits below the cohort baseline. Not a warning — a clear starting point for refinement.",
-      signal_zh:"（fallback）",
-      details: raw.texture.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-      recommendation_en:"Focus on barrier re-stabilization and water retention.",
-      recommendation_zh:"（fallback）",
-      priority: 95, confidence: 0.9
-    },
-    {
-      id:"hydration", title_en:"HYDRATION", title_zh:"含水與屏障", score: raw.hydration.score, max:100,
-      signal_en:"Hydration sits below the ideal reference band.",
-      signal_zh:"（fallback）",
-      details: raw.hydration.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-      recommendation_en:"Prioritize ceramides + humectants.",
-      recommendation_zh:"（fallback）",
-      priority: 92, confidence: 0.88
-    },
-    ...(["pore","pigmentation","wrinkle","sebum","skintone","sensitivity","clarity","elasticity","redness","brightness","firmness","pores_depth"] as MetricId[])
-      .map((id, idx) => {
-        const m = raw[id];
-        const baseTitle: Record<string,[string,string]> = {
-          pore:["PORE","毛孔"],
-          pigmentation:["PIGMENTATION","色素沉著"],
-          wrinkle:["WRINKLE","細紋與摺痕"],
-          sebum:["SEBUM","油脂平衡"],
-          skintone:["SKIN TONE","膚色一致性"],
-          sensitivity:["SENSITIVITY","刺激反應傾向"],
-          clarity:["CLARITY","表層清晰度"],
-          elasticity:["ELASTICITY","彈性回彈"],
-          redness:["REDNESS","泛紅強度"],
-          brightness:["BRIGHTNESS","亮度狀態"],
-          firmness:["FIRMNESS","緊緻支撐"],
-          pores_depth:["PORE DEPTH","毛孔深度感"],
-        };
-        const [en,zh] = baseTitle[id] ?? [id.toUpperCase(),"補充指標"];
-
-        return {
-          id,
-          title_en: en,
-          title_zh: zh,
-          score: m.score,
-          max: 100,
-          signal_en: "Signal extracted from multi-view input. Interpretation prioritizes baseline, stability, and trajectory.",
-          signal_zh: "（fallback）",
-          details: m.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-          recommendation_en: "Stability-first.",
-          recommendation_zh: "（fallback）",
-          priority: 80 - idx,
-          confidence: 0.82
-        } as Card;
-      }),
-  ];
-
-  cards.sort((a,b)=> (b.priority??0) - (a.priority??0));
-  return cards;
 }
 
 /* =========================
@@ -581,9 +495,7 @@ export default async function handler(req: Request) {
 
     const form = await req.formData();
     const files = await getFiles(form);
-
-    // 用最大張當主圖
-    files.sort((a, b) => b.size - a.size);
+    files.sort((a,b)=> b.size - a.size);
     const primaryFile = files[0];
 
     const bytes = await Promise.all(files.map(toBytes));
@@ -591,37 +503,35 @@ export default async function handler(req: Request) {
 
     const youcam = await analyzeWithYouCamSingle(primaryFile);
 
-    // ✅ 真分數（YouCam）→ 組 payload → OpenAI 生成長敘事
     const metricsPayload = buildMetricsPayload(youcam.raw);
 
-    let openaiOut: any = null;
+    let report: any = null;
+    let narrative = "openai";
     try {
-      openaiOut = await generateCardsWithOpenAI(metricsPayload);
+      report = await generateReportWithOpenAI(metricsPayload);
     } catch (e:any) {
-      // OpenAI 掛了就 fallback
-      openaiOut = null;
+      narrative = "fallback";
+      report = null;
     }
 
-    const finalCards: Card[] = openaiOut?.cards
-      ? openaiOut.cards
-      : buildCards(youcam.raw);
+    // ✅ OpenAI 卡片 → 轉成前端需要的 shape（保留 short+deep）
+    const cards: Card[] = report?.cards ?? [];
 
     return json({
-      build: "honeytea_scan_youcam_openai_v1",
+      build: "honeytea_scan_youcam_openai_v2",
       scanId: nowId(),
       precheck: {
         ok: prechecks.every(p => p.ok),
         warnings: Array.from(new Set(prechecks.flatMap(p => p.warnings))),
         tips: Array.from(new Set(prechecks.flatMap(p => p.tips))),
       },
-      cards: finalCards,
-      summary_en: openaiOut?.summary_en ?? "Skin analysis complete. Signals generated.",
-      summary_zh: openaiOut?.summary_zh ?? "皮膚分析完成，已生成訊號。",
+      summary_en: report?.summary_en ?? "Skin analysis complete.",
+      summary_zh: report?.summary_zh ?? "皮膚分析完成。",
+      cards,
       meta: {
         youcam_task_id: youcam.taskId,
         youcam_task_status: youcam.task_status,
-        mode: "youcam_metrics + openai_narrative",
-        narrative: openaiOut ? "openai" : "fallback",
+        narrative,
       },
     });
 
