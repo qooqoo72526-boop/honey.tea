@@ -2,89 +2,49 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>Mirror Neuron | Final Screenshot Match</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HONEY.TEA | Future Skin Intelligence</title>
     <style>
+        /* =========================================
+           高級視覺系統 (Visual System)
+           ========================================= */
         :root {
-            /* 調整這三個數字來對齊妳的畫面 */
-            --bird-scale: 850px; /* 阿金放大，符合截圖比例 */
-            --bird-x: 50%;       /* 水平置中 */
-            --bird-y: 65%;       /* 垂直位置 (配合地板) */
+            --bird-scale: 850px;
+            --bird-x: 50%;
+            --bird-y: 65%;
+            --neon-core: #00f2ff;
+            --neon-purple: #bd00ff;
+            --cursor-gold: #ffd700;
         }
 
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; cursor: none; }
 
+        /* 背景：直接抓專案資料夾裡的 assets */
         #stage {
-            position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             background: url('assets/all.webp') no-repeat center center;
             background-size: cover;
-            /* 背景稍微壓一點點暗，讓阿金亮起來 */
             filter: contrast(1.1) brightness(0.9);
             overflow: hidden;
         }
 
-        /* =========================================
-           1. 膠囊型遮擋層 (符合身形，不再是圓形黑坨)
-           ========================================= */
-        .agent-capsule-blocker {
-            position: absolute;
-            top: var(--bird-y); left: var(--bird-x);
-            transform: translate(-50%, -50%);
-            
-            /* 【關鍵修改】改成直立的長橢圓，貼合鳥身 */
-            width: 300px; height: 550px; 
-            
-            /* 使用深紫靛色，跟地板的反光融合 */
-            background: radial-gradient(ellipse at center, #0e001a 50%, transparent 80%);
-            
-            /* 模糊度適中，讓它看起來像自然的影子 */
-            filter: blur(35px);
-            z-index: 998; 
-            pointer-events: none;
-            opacity: 1.0;
-        }
+        /* 1. 膠囊遮罩 */
+        .agent-capsule-blocker { position: absolute; top: var(--bird-y); left: var(--bird-x); transform: translate(-50%, -50%); width: 300px; height: 550px; background: radial-gradient(ellipse at center, #0e001a 50%, transparent 80%); filter: blur(35px); z-index: 998; pointer-events: none; opacity: 1.0; }
 
-        /* =========================================
-           2. 阿金 (截圖還原參數)
-           ========================================= */
-        .ahjin-agent {
-            position: absolute;
-            top: var(--bird-y); left: var(--bird-x);
-            transform: translate(-50%, -50%);
-            width: var(--bird-scale); height: auto;
-            z-index: 999; pointer-events: none; 
-            
-            mix-blend-mode: screen; 
-            
-            /* 【還原截圖的乾淨質感】 */
-            /* 不加重口味對比，只求乾淨 */
-            /* brightness 105%: 去除灰感，變白 */
-            /* saturate 120%: 微微補色，不變螢光 */
-            filter: brightness(105%) contrast(105%) saturate(120%);
-            
-            opacity: 1.0;
+        /* 2. 阿金 Agent */
+        .ahjin-agent { position: absolute; top: var(--bird-y); left: var(--bird-x); transform: translate(-50%, -50%); width: var(--bird-scale); height: auto; z-index: 999; pointer-events: none; mix-blend-mode: screen; filter: brightness(105%) contrast(105%) saturate(120%); -webkit-mask-image: radial-gradient(closest-side, black 65%, transparent 98%); mask-image: radial-gradient(closest-side, black 65%, transparent 98%); }
 
-            /* 邊緣柔和去框 */
-            -webkit-mask-image: radial-gradient(closest-side, black 65%, transparent 98%);
-            mask-image: radial-gradient(closest-side, black 65%, transparent 98%);
-        }
-
-        /* =========================================
-           3. 環境氛圍
-           ========================================= */
+        /* 3. 環境氛圍 */
         .star-layer { position: absolute; top: 0; left: 0; width: 100%; height: 50%; mix-blend-mode: screen; pointer-events: none; }
         .nebula-flow { background-image: radial-gradient(circle at 30% 40%, rgba(189, 0, 255, 0.3), transparent 50%), radial-gradient(circle at 70% 60%, rgba(0, 242, 255, 0.2), transparent 50%); filter: blur(30px); opacity: 0.6; animation: nebulaMove 30s ease-in-out infinite alternate; }
         .stars-twinkle { background-image: radial-gradient(2px 2px at 10% 10%, white, transparent), radial-gradient(2px 2px at 20% 30%, white, transparent), radial-gradient(3px 3px at 80% 20%, white, transparent), radial-gradient(1px 1px at 50% 50%, white, transparent); background-size: 300px 300px; opacity: 0.9; animation: starTwinkle 4s ease-in-out infinite; }
-        
         .sign-glow { position: absolute; top: 10%; left: 15%; width: 35%; height: 12%; background: linear-gradient(to right, var(--neon-purple), var(--neon-core)); mix-blend-mode: overlay; filter: blur(25px); opacity: 0.6; animation: breatheSoft 5s infinite alternate; }
         .door-glow { position: absolute; top: 40%; right: 13%; width: 15%; height: 50%; background: radial-gradient(ellipse at center, rgba(255, 215, 0, 0.3), transparent 70%); mix-blend-mode: screen; filter: blur(20px); opacity: 0.5; animation: breatheSoft 3s infinite alternate-reverse; }
         .floor-energy { position: absolute; top: 60%; left: 0; width: 100%; height: 40%; background: repeating-linear-gradient(110deg, transparent 0%, transparent 45%, rgba(0, 242, 255, 0.1) 48%, rgba(189, 0, 255, 0.1) 50%, rgba(0, 242, 255, 0.1) 52%, transparent 55%, transparent 100%); background-size: 200% 200%; mix-blend-mode: screen; opacity: 0.4; transform: perspective(1000px) rotateX(60deg); animation: floorFlow 8s linear infinite; pointer-events: none; }
 
-        /* =========================================
-           4. 機器組 (維持)
-           ========================================= */
-        .center-machine-group { position: absolute; top: 55.5%; left: 42.5%; transform: translate(-50%, -50%); width: 268px; height: 268px; z-index: 10; cursor: pointer; }
-        .ring-mask { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; background: radial-gradient(circle at center, var(--neon-core) 0%, transparent 45%); opacity: 0.1; box-shadow: none; transition: all 0.5s; animation: coreStandbyBreathe 4s ease-in-out infinite; }
+        /* 4. 掃描機器組 */
+        .center-machine-group { position: absolute; top: 55.5%; left: 42.5%; transform: translate(-50%, -50%); width: 268px; height: 268px; z-index: 1000; cursor: pointer; }
+        .ring-mask { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; background: radial-gradient(circle at center, var(--neon-core) 0%, transparent 45%); opacity: 0.1; transition: all 0.5s; animation: coreStandbyBreathe 4s ease-in-out infinite; }
         .scan-container { position: absolute; inset: 0; opacity: 0; transition: opacity 0.5s; overflow: hidden; border-radius: 50%; }
         .center-machine-group.active .scan-container { opacity: 1; }
         .radar-scan-cw { position: absolute; top: 11%; left: 14.5%; width: 74%; height: 74%; border-radius: 50%; background: conic-gradient(from 0deg, transparent 0%, transparent 80%, rgba(0, 242, 255, 0.3) 100%); mix-blend-mode: screen; animation: ritualSpinCW 4s cubic-bezier(0.65, 0, 0.35, 1) infinite; }
@@ -95,7 +55,7 @@
         .center-machine-group.active .ring-mask { animation: activeRingBreath 2s ease-in-out infinite; background: radial-gradient(circle at center, rgba(0, 242, 255, 0.15) 0%, transparent 65%); border: 1px solid rgba(0, 242, 255, 0.15); }
         .holo-base-visible { position: absolute; top: 85%; left: 42.5%; width: 420px; height: 300px; transform: translate(-50%, -50%) perspective(1000px) rotateX(80deg); pointer-events: none; background-image: radial-gradient(circle, rgba(0, 242, 255, 0.15) 0%, transparent 60%), linear-gradient(rgba(0, 242, 255, 0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 242, 255, 0.15) 1px, transparent 1px); background-size: 100% 100%, 40px 40px, 40px 40px; mask-image: radial-gradient(ellipse at center, black 40%, transparent 80%); opacity: 0.85; animation: basePulseSmooth 4s infinite alternate; }
 
-        /* 動畫庫 */
+        /* 動畫 Keyframes (保持原樣) */
         @keyframes nebulaMove { 0% { transform: translateX(-2%) translateY(-2%); } 100% { transform: translateX(2%) translateY(2%); } }
         @keyframes starTwinkle { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
         @keyframes breatheSoft { 0% { opacity: 0.4; filter: blur(25px); } 100% { opacity: 0.7; filter: blur(30px); } }
@@ -115,6 +75,8 @@
 <body>
     <div id="cursor"></div>
     <div id="aura"></div>
+
+    <input type="file" id="uploadBtn" multiple style="display: none;" accept="image/*">
 
     <div class="agent-capsule-blocker"></div>
 
@@ -146,9 +108,9 @@
         const scanner = document.getElementById('scanner');
         const ajinVideo = document.getElementById('ajinVideo');
         
+        // 滑鼠與背景視差特效
         let tx = 0, ty = 0, cx = 0, cy = 0;
         
-        // 強制確保影片循環播放 (防止瀏覽器暫停)
         ajinVideo.addEventListener('ended', function() {
             this.currentTime = 0;
             this.play();
@@ -160,72 +122,75 @@
             tx = (e.clientX - window.innerWidth / 2) / 140; ty = (e.clientY - window.innerHeight / 2) / 140;
         });
 
-        scanner.addEventListener('click', () => {
-            scanner.classList.toggle('active');
-            cursor.style.transform = 'translate(-50%, -50%) scale(0.8)';
-            setTimeout(() => cursor.style.transform = 'translate(-50%, -50%) scale(1)', 150);
-        });
-
         function animate() {
             cx += (tx - cx) * 0.015; cy += (ty - cy) * 0.015;
             stage.style.transform = `translate3d(${cx}px, ${cy}px, 0)`;
             requestAnimationFrame(animate);
         }
         animate();
-        // ===== HONEY.TEA | Connect Scan API =====
 
-// Upload Photo（U）— 上傳 3 張照片
-const uploadBtn = document.getElementById("uploadBtn");
-if (uploadBtn) {
-  uploadBtn.addEventListener("change", async (e) => {
-    const files = e.target.files;
-    if (!files || files.length !== 3) {
-      alert("請上傳 3 張不同角度的照片（正面 / 左側 / 右側）");
-      return;
-    }
-    await runScan(files);
-  });
-}
+        // ============================================
+        //  SCAN & API LOGIC (G-V)
+        // ============================================
 
-// Begin Analysis（B）— 拍照 or 掃描後送出
-async function runScan(files) {
-  const formData = new FormData();
-  formData.append("image1", files[0]);
-  formData.append("image2", files[1]);
-  formData.append("image3", files[2]);
+        // 1. 點擊掃描儀 -> 觸發「隱藏的檔案輸入框」
+        scanner.addEventListener('click', () => {
+            scanner.classList.toggle('active'); // 視覺反饋
+            cursor.style.transform = 'translate(-50%, -50%) scale(0.8)';
+            setTimeout(() => cursor.style.transform = 'translate(-50%, -50%) scale(1)', 150);
+            
+            // 打開檔案選擇器
+            document.getElementById("uploadBtn").click();
+        });
 
-  // 沉靜掃描狀態（你之後可以加動畫）
-  document.body.classList.add("scanning");
+        // 2. 監聽上傳動作
+        const uploadBtn = document.getElementById("uploadBtn");
+        if (uploadBtn) {
+            uploadBtn.addEventListener("change", async (e) => {
+                const files = e.target.files;
+                if (files && files.length > 0) {
+                    await runScan(files);
+                }
+            });
+        }
 
-  try {
-    const res = await fetch("/api/scan", {
-      method: "POST",
-      body: formData
-    });
+        // 3. 呼叫 Vercel API (本地路徑)
+        async function runScan(files) {
+            console.log("System: Analyzing assets...");
+            const formData = new FormData();
+            
+            // 把所有選到的檔案放進表單
+            for (let i = 0; i < files.length; i++) {
+                formData.append(`image${i+1}`, files[i]);
+            }
 
-    if (!res.ok) throw new Error("Scan failed");
+            document.body.classList.add("scanning");
 
-    const data = await res.json();
-    console.log("SCAN RESULT:", data);
+            try {
+                // 因為我們在 G (GitHub) -> V (Vercel)，
+                // API 就在我們隔壁，所以用相對路徑 /api/scan 即可
+                const res = await fetch("/api/scan", {
+                    method: "POST",
+                    body: formData
+                });
 
-    // TODO：下一步把 data.cards 渲染成高級卡片
-    // 這裡目前先確認「真的接到了」
+                if (!res.ok) throw new Error("API Connection Failed");
 
-  } catch (err) {
-    console.error(err);
-    alert("分析失敗，請確認照片清晰且光線正常");
-  } finally {
-    document.body.classList.remove("scanning");
-  }
-}
-</body>
+                const data = await res.json();
+                console.log("SCAN RESULT:", data);
+                
+                // TODO: 收到資料後，看你要跳轉頁面還是顯示卡片
+                alert("Scan Complete! Data received.");
+
+            } catch (err) {
+                console.error("Error:", err);
+                alert("System Error: Check API connection.");
+            } finally {
+                document.body.classList.remove("scanning");
+            }
+        }
     </script>
-    <script src="/assets/scan-ui.js"></script>
-<script type="module">
-  import { initScanUI } from "/assets/scan-ui.js";
-  initScanUI();
-</script>
-
+</body>
 </html>
 
 
