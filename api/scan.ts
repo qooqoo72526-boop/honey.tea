@@ -26,24 +26,25 @@ type Card = {
   confidence: number;
 };
 
+type Report = {
+  summary_en: string;
+  summary_zh: string;
+  cards: Card[];
+};
+
 /* =========================
    ✅ CORS (Framer allowed)
    ========================= */
 
 const ALLOWED_ORIGINS = new Set<string>([
   "https://honeytea.framer.ai",
-  // 若你還有 framer.app 或正式網域，上線後加在這裡：
+  // 上線後可加你的正式網域：
   // "https://yourdomain.com",
-  // "https://honeytea.framer.app",
 ]);
 
 function corsHeaders(req: Request) {
   const origin = req.headers.get("origin") || "";
-  const allow =
-    ALLOWED_ORIGINS.has(origin)
-      ? origin
-      : "*"; // 保守：先放行。你正式上線後可改成只允許白名單
-
+  const allow = ALLOWED_ORIGINS.has(origin) ? origin : "*";
   return {
     "access-control-allow-origin": allow,
     "access-control-allow-methods": "POST, OPTIONS",
@@ -236,7 +237,7 @@ function clampScore(x: any) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-/** ✅ 動態化 details — 每個人都不同（保留你的邏輯） */
+/** ✅ 動態化 details — 每個人都不同（保留你原本做法） */
 function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>) {
   const get = (k: string) => scoreMap.get(k);
 
@@ -251,346 +252,171 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
   const F_ui = clampScore(get("hd_firmness")?.ui);
 
   return [
-    {
-      id: "texture",
-      title_en: "TEXTURE",
-      title_zh: "紋理",
-      score: T_ui,
-      details: [
-        { label_en: "Roughness", label_zh: "粗糙度", value: Math.round(100 - T_ui * 0.85 + (Math.random() * 4 - 2)) },
-        { label_en: "Smoothness", label_zh: "平滑度", value: Math.round(T_ui * 0.92 + (Math.random() * 3 - 1.5)) },
-        { label_en: "Evenness", label_zh: "均勻度", value: Math.round(T_ui * 0.88 + (Math.random() * 5 - 2.5)) },
-      ],
-    },
-    {
-      id: "pore",
-      title_en: "PORE",
-      title_zh: "毛孔",
-      score: P_ui,
-      details: [
-        { label_en: "T-Zone", label_zh: "T 區", value: Math.round(P_ui * 0.82 + (Math.random() * 6 - 3)) },
-        { label_en: "Cheek", label_zh: "臉頰", value: Math.round(P_ui * 1.05 + (Math.random() * 4 - 2)) },
-        { label_en: "Chin", label_zh: "下巴", value: Math.round(P_ui * 0.96 + (Math.random() * 5 - 2.5)) },
-      ],
-    },
-    {
-      id: "pigmentation",
-      title_en: "PIGMENTATION",
-      title_zh: "色素沉著",
-      score: A_ui,
-      details: [
-        { label_en: "Brown Spot", label_zh: "棕色斑", value: Math.round(A_ui * 0.90 + (Math.random() * 5 - 2)) },
-        { label_en: "Red Area", label_zh: "紅色區", value: Math.round(R_ui * 0.88 + (Math.random() * 4 - 2)) },
-        { label_en: "Dullness", label_zh: "暗沉度", value: Math.round(100 - RA_ui * 0.75 + (Math.random() * 6 - 3)) },
-      ],
-    },
-    {
-      id: "wrinkle",
-      title_en: "WRINKLE",
-      title_zh: "細紋與摺痕",
-      score: W_ui,
-      details: [
-        { label_en: "Eye Area", label_zh: "眼周", value: Math.round(100 - W_ui * 0.85 + (Math.random() * 7 - 3.5)) },
-        { label_en: "Forehead", label_zh: "額頭", value: Math.round(W_ui * 0.95 + (Math.random() * 5 - 2.5)) },
-        { label_en: "Nasolabial", label_zh: "法令紋", value: Math.round(100 - W_ui * 0.78 + (Math.random() * 8 - 4)) },
-      ],
-    },
-    {
-      id: "hydration",
-      title_en: "HYDRATION",
-      title_zh: "含水與屏障",
-      score: M_ui,
-      details: [
-        { label_en: "Surface", label_zh: "表層含水", value: Math.round(M_ui * 0.72 + (Math.random() * 6 - 3)) },
-        { label_en: "Deep", label_zh: "深層含水", value: Math.round(M_ui * 0.82 + (Math.random() * 5 - 2.5)) },
-        { label_en: "TEWL", label_zh: "經皮水分流失", value: M_ui > 70 ? "Low" : M_ui > 50 ? "Moderate" : "Elevated" },
-      ],
-    },
-    {
-      id: "sebum",
-      title_en: "SEBUM",
-      title_zh: "油脂平衡",
-      score: O_ui,
-      details: [
-        { label_en: "T-Zone", label_zh: "T 區", value: Math.round(100 - O_ui * 0.70 + (Math.random() * 8 - 4)) },
-        { label_en: "Cheek", label_zh: "臉頰", value: Math.round(O_ui * 0.85 + (Math.random() * 5 - 2.5)) },
-        { label_en: "Chin", label_zh: "下巴", value: Math.round(100 - O_ui * 0.75 + (Math.random() * 6 - 3)) },
-      ],
-    },
-    {
-      id: "skintone",
-      title_en: "SKIN TONE",
-      title_zh: "膚色一致性",
-      score: RA_ui,
-      details: [
-        { label_en: "Evenness", label_zh: "均勻度", value: Math.round(RA_ui * 0.90 + (Math.random() * 4 - 2)) },
-        { label_en: "Brightness", label_zh: "亮度", value: Math.round(RA_ui * 0.88 + (Math.random() * 5 - 2.5)) },
-        { label_en: "Redness", label_zh: "紅色指數", value: Math.round(100 - R_ui * 0.80 + (Math.random() * 6 - 3)) },
-      ],
-    },
-    {
-      id: "sensitivity",
-      title_en: "SENSITIVITY",
-      title_zh: "刺激反應傾向",
-      score: R_ui,
-      details: [
-        { label_en: "Redness Index", label_zh: "泛紅指數", value: Math.round(100 - R_ui * 0.78 + (Math.random() * 7 - 3.5)) },
-        { label_en: "Barrier Stability", label_zh: "屏障功能", value: Math.round(M_ui * 0.85 + R_ui * 0.10 + (Math.random() * 4 - 2)) },
-        { label_en: "Irritation Response", label_zh: "刺激反應", value: R_ui > 75 ? "Low" : R_ui > 55 ? "Medium" : "Elevated" },
-      ],
-    },
-    {
-      id: "clarity",
-      title_en: "CLARITY",
-      title_zh: "表層清晰度",
-      score: RA_ui,
-      details: [
-        { label_en: "Micro-reflection", label_zh: "微反射", value: RA_ui > 70 ? "Even" : RA_ui > 50 ? "Uneven" : "Scattered" },
-        { label_en: "Contrast Zones", label_zh: "高對比區", value: A_ui < 60 ? "Present" : "Minimal" },
-        { label_en: "Stability", label_zh: "穩定度", value: T_ui > 65 ? "High" : T_ui > 45 ? "Medium" : "Low" },
-      ],
-    },
-    {
-      id: "elasticity",
-      title_en: "ELASTICITY",
-      title_zh: "彈性回彈",
-      score: F_ui,
-      details: [
-        { label_en: "Rebound", label_zh: "回彈", value: F_ui > 70 ? "Stable" : F_ui > 50 ? "Moderate" : "Reduced" },
-        { label_en: "Support", label_zh: "支撐", value: F_ui > 65 ? "Strong" : F_ui > 45 ? "Moderate" : "Weak" },
-        { label_en: "Variance", label_zh: "變異", value: F_ui > 60 ? "Low" : "Medium" },
-      ],
-    },
-    {
-      id: "redness",
-      title_en: "REDNESS",
-      title_zh: "泛紅強度",
-      score: R_ui,
-      details: [
-        { label_en: "Hotspots", label_zh: "集中區", value: R_ui < 55 ? "Localized" : R_ui < 70 ? "Scattered" : "Minimal" },
-        { label_en: "Threshold", label_zh: "門檻", value: R_ui < 50 ? "Near" : R_ui < 65 ? "Moderate" : "High" },
-        { label_en: "Stability", label_zh: "穩定度", value: R_ui > 65 ? "High" : R_ui > 45 ? "Medium" : "Low" },
-      ],
-    },
-    {
-      id: "brightness",
-      title_en: "BRIGHTNESS",
-      title_zh: "亮度狀態",
-      score: RA_ui,
-      details: [
-        { label_en: "Global", label_zh: "整體", value: RA_ui > 70 ? "Stable" : RA_ui > 50 ? "Moderate" : "Low" },
-        { label_en: "Shadow Zones", label_zh: "陰影區", value: RA_ui > 65 ? "Minimal" : "Minor deviation" },
-        { label_en: "Trajectory", label_zh: "軌跡", value: RA_ui > 60 ? "Improving" : "Baseline" },
-      ],
-    },
-    {
-      id: "firmness",
-      title_en: "FIRMNESS",
-      title_zh: "緊緻支撐",
-      score: F_ui,
-      details: [
-        { label_en: "Support", label_zh: "支撐", value: F_ui > 65 ? "Present" : F_ui > 45 ? "Moderate" : "Reduced" },
-        { label_en: "Baseline", label_zh: "基準", value: F_ui > 60 ? "Stable" : F_ui > 40 ? "Moderate" : "Low" },
-        { label_en: "Variance", label_zh: "變異", value: F_ui > 55 ? "Low" : "Medium" },
-      ],
-    },
-    {
-      id: "pores_depth",
-      title_en: "PORE DEPTH",
-      title_zh: "毛孔深度感",
-      score: P_ui,
-      details: [
-        { label_en: "Depth Proxy", label_zh: "深度代理值", value: P_ui < 60 ? "Derived" : "Shallow" },
-        { label_en: "Edge Definition", label_zh: "邊界清晰度", value: P_ui > 70 ? "Good" : P_ui > 50 ? "Fair" : "Diffuse" },
-        { label_en: "Stability", label_zh: "穩定度", value: P_ui > 65 ? "High" : P_ui > 45 ? "Medium" : "Variable" },
-      ],
-    },
+    { id:"texture", title_en:"TEXTURE", title_zh:"紋理", score:T_ui, details:[
+      { label_en:"Roughness", label_zh:"粗糙度", value: Math.round(100 - T_ui * 0.85 + (Math.random() * 4 - 2)) },
+      { label_en:"Smoothness", label_zh:"平滑度", value: Math.round(T_ui * 0.92 + (Math.random() * 3 - 1.5)) },
+      { label_en:"Evenness", label_zh:"均勻度", value: Math.round(T_ui * 0.88 + (Math.random() * 5 - 2.5)) },
+    ]},
+    { id:"pore", title_en:"PORE", title_zh:"毛孔", score:P_ui, details:[
+      { label_en:"T-Zone", label_zh:"T 區", value: Math.round(P_ui * 0.82 + (Math.random() * 6 - 3)) },
+      { label_en:"Cheek", label_zh:"臉頰", value: Math.round(P_ui * 1.05 + (Math.random() * 4 - 2)) },
+      { label_en:"Chin", label_zh:"下巴", value: Math.round(P_ui * 0.96 + (Math.random() * 5 - 2.5)) },
+    ]},
+    { id:"pigmentation", title_en:"PIGMENTATION", title_zh:"色素沉著", score:A_ui, details:[
+      { label_en:"Brown Spot", label_zh:"棕色斑", value: Math.round(A_ui * 0.90 + (Math.random() * 5 - 2)) },
+      { label_en:"Red Area", label_zh:"紅色區", value: Math.round(R_ui * 0.88 + (Math.random() * 4 - 2)) },
+      { label_en:"Dullness", label_zh:"暗沉度", value: Math.round(100 - RA_ui * 0.75 + (Math.random() * 6 - 3)) },
+    ]},
+    { id:"wrinkle", title_en:"WRINKLE", title_zh:"細紋與摺痕", score:W_ui, details:[
+      { label_en:"Eye Area", label_zh:"眼周", value: Math.round(100 - W_ui * 0.85 + (Math.random() * 7 - 3.5)) },
+      { label_en:"Forehead", label_zh:"額頭", value: Math.round(W_ui * 0.95 + (Math.random() * 5 - 2.5)) },
+      { label_en:"Nasolabial", label_zh:"法令紋", value: Math.round(100 - W_ui * 0.78 + (Math.random() * 8 - 4)) },
+    ]},
+    { id:"hydration", title_en:"HYDRATION", title_zh:"含水與屏障", score:M_ui, details:[
+      { label_en:"Surface", label_zh:"表層含水", value: Math.round(M_ui * 0.72 + (Math.random() * 6 - 3)) },
+      { label_en:"Deep", label_zh:"深層含水", value: Math.round(M_ui * 0.82 + (Math.random() * 5 - 2.5)) },
+      { label_en:"TEWL", label_zh:"經皮水分流失", value: M_ui > 70 ? "Low" : M_ui > 50 ? "Moderate" : "Elevated" },
+    ]},
+    { id:"sebum", title_en:"SEBUM", title_zh:"油脂平衡", score:O_ui, details:[
+      { label_en:"T-Zone", label_zh:"T 區", value: Math.round(100 - O_ui * 0.70 + (Math.random() * 8 - 4)) },
+      { label_en:"Cheek", label_zh:"臉頰", value: Math.round(O_ui * 0.85 + (Math.random() * 5 - 2.5)) },
+      { label_en:"Chin", label_zh:"下巴", value: Math.round(100 - O_ui * 0.75 + (Math.random() * 6 - 3)) },
+    ]},
+    { id:"skintone", title_en:"SKIN TONE", title_zh:"膚色一致性", score:RA_ui, details:[
+      { label_en:"Evenness", label_zh:"均勻度", value: Math.round(RA_ui * 0.90 + (Math.random() * 4 - 2)) },
+      { label_en:"Brightness", label_zh:"亮度", value: Math.round(RA_ui * 0.88 + (Math.random() * 5 - 2.5)) },
+      { label_en:"Redness", label_zh:"紅色指數", value: Math.round(100 - R_ui * 0.80 + (Math.random() * 6 - 3)) },
+    ]},
+    { id:"sensitivity", title_en:"SENSITIVITY", title_zh:"刺激反應傾向", score:R_ui, details:[
+      { label_en:"Redness Index", label_zh:"泛紅指數", value: Math.round(100 - R_ui * 0.78 + (Math.random() * 7 - 3.5)) },
+      { label_en:"Barrier Stability", label_zh:"屏障功能", value: Math.round(M_ui * 0.85 + R_ui * 0.10 + (Math.random() * 4 - 2)) },
+      { label_en:"Irritation Response", label_zh:"刺激反應", value: R_ui > 75 ? "Low" : R_ui > 55 ? "Medium" : "Elevated" },
+    ]},
+    { id:"clarity", title_en:"CLARITY", title_zh:"表層清晰度", score:RA_ui, details:[
+      { label_en:"Micro-reflection", label_zh:"微反射", value: RA_ui > 70 ? "Even" : RA_ui > 50 ? "Uneven" : "Scattered" },
+      { label_en:"Contrast Zones", label_zh:"高對比區", value: A_ui < 60 ? "Present" : "Minimal" },
+      { label_en:"Stability", label_zh:"穩定度", value: T_ui > 65 ? "High" : T_ui > 45 ? "Medium" : "Low" },
+    ]},
+    { id:"elasticity", title_en:"ELASTICITY", title_zh:"彈性回彈", score:F_ui, details:[
+      { label_en:"Rebound", label_zh:"回彈", value: F_ui > 70 ? "Stable" : F_ui > 50 ? "Moderate" : "Reduced" },
+      { label_en:"Support", label_zh:"支撐", value: F_ui > 65 ? "Strong" : F_ui > 45 ? "Moderate" : "Weak" },
+      { label_en:"Variance", label_zh:"變異", value: F_ui > 60 ? "Low" : "Medium" },
+    ]},
+    { id:"redness", title_en:"REDNESS", title_zh:"泛紅強度", score:R_ui, details:[
+      { label_en:"Hotspots", label_zh:"集中區", value: R_ui < 55 ? "Localized" : R_ui < 70 ? "Scattered" : "Minimal" },
+      { label_en:"Threshold", label_zh:"門檻", value: R_ui < 50 ? "Near" : R_ui < 65 ? "Moderate" : "High" },
+      { label_en:"Stability", label_zh:"穩定度", value: R_ui > 65 ? "High" : R_ui > 45 ? "Medium" : "Low" },
+    ]},
+    { id:"brightness", title_en:"BRIGHTNESS", title_zh:"亮度狀態", score:RA_ui, details:[
+      { label_en:"Global", label_zh:"整體", value: RA_ui > 70 ? "Stable" : RA_ui > 50 ? "Moderate" : "Low" },
+      { label_en:"Shadow Zones", label_zh:"陰影區", value: RA_ui > 65 ? "Minimal" : "Minor deviation" },
+      { label_en:"Trajectory", label_zh:"軌跡", value: RA_ui > 60 ? "Improving" : "Baseline" },
+    ]},
+    { id:"firmness", title_en:"FIRMNESS", title_zh:"緊緻支撐", score:F_ui, details:[
+      { label_en:"Support", label_zh:"支撐", value: F_ui > 65 ? "Present" : F_ui > 45 ? "Moderate" : "Reduced" },
+      { label_en:"Baseline", label_zh:"基準", value: F_ui > 60 ? "Stable" : F_ui > 40 ? "Moderate" : "Low" },
+      { label_en:"Variance", label_zh:"變異", value: F_ui > 55 ? "Low" : "Medium" },
+    ]},
+    { id:"pores_depth", title_en:"PORE DEPTH", title_zh:"毛孔深度感", score:P_ui, details:[
+      { label_en:"Depth Proxy", label_zh:"深度代理值", value: P_ui < 60 ? "Derived" : "Shallow" },
+      { label_en:"Edge Definition", label_zh:"邊界清晰度", value: P_ui > 70 ? "Good" : P_ui > 50 ? "Fair" : "Diffuse" },
+      { label_en:"Stability", label_zh:"穩定度", value: P_ui > 65 ? "High" : P_ui > 45 ? "Medium" : "Variable" },
+    ]},
   ] as Array<{ id: MetricId; title_en: string; title_zh: string; score: number; details: any[] }>;
 }
 
 /* =========================
-   OpenAI strict JSON schema
+   Coze — Report Engine (JSON-only)
    ========================= */
 
-function schemaForOpenAI() {
-  const metricEnum: MetricId[] = [
-    "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
-    "clarity","elasticity","redness","brightness","firmness","pores_depth",
-  ];
-  return {
-    type: "object",
-    additionalProperties: false,
-    required: ["summary_en","summary_zh","cards"],
-    properties: {
-      summary_en: { type: "string", minLength: 80 },
-      summary_zh: { type: "string", minLength: 40 },
-      cards: {
-        type: "array",
-        minItems: 14,
-        maxItems: 14,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          required: [
-            "id","title_en","title_zh","score","max",
-            "signal_en","recommendation_en",
-            "signal_zh_short","signal_zh_deep",
-            "recommendation_zh_short","recommendation_zh_deep",
-            "details","priority","confidence",
-          ],
-          properties: {
-            id: { type: "string", enum: metricEnum },
-            title_en: { type: "string" },
-            title_zh: { type: "string" },
-            score: { type: "integer", minimum: 0, maximum: 100 },
-            max: { type: "integer", enum: [100] },
-
-            signal_en: { type: "string", minLength: 240 },
-            recommendation_en: { type: "string", minLength: 140 },
-
-            signal_zh_short: { type: "string", minLength: 16 },
-            signal_zh_deep: {
-              type: "string",
-              minLength: 900,
-              pattern: "【系統判斷說明】[\\s\\S]*【細項數據如何被解讀】[\\s\\S]*【系統建議（為什麼是這個建議）】"
-            },
-            recommendation_zh_short: { type: "string", minLength: 12 },
-            recommendation_zh_deep: { type: "string", minLength: 420 },
-
-            details: {
-              type: "array",
-              minItems: 3,
-              maxItems: 3,
-              items: {
-                type: "object",
-                additionalProperties: false,
-                required: ["label_en","label_zh","value"],
-                properties: {
-                  label_en: { type: "string" },
-                  label_zh: { type: "string" },
-                  value: { type: ["number","string"] },
-                },
-              },
-            },
-
-            priority: { type: "integer", minimum: 1, maximum: 100 },
-            confidence: { type: "number", minimum: 0, maximum: 1 },
-          },
-        },
-      },
-    },
-  };
+function safeJsonParseMaybe(text: string) {
+  const t = (text || "").trim();
+  // 有些模型會包 ```json ... ```
+  const cleaned = t.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/g, "").trim();
+  return JSON.parse(cleaned);
 }
 
-/** ✅ 你高級敘事：完整保留（不敷衍） */
-async function generateReportWithOpenAI(metrics: any[]) {
-  const openaiKey = mustEnv("OPENAI_API_KEY");
-  const schema = schemaForOpenAI();
+function pickAssistantText(cozeResp: any) {
+  // 盡量兼容不同回傳結構
+  const candidates: any[] = [];
 
-  const system = `
-You are the Skin Vision AI narrative engine — a US-grade, stability-first analysis system.
+  if (cozeResp?.data?.messages) candidates.push(...cozeResp.data.messages);
+  if (cozeResp?.messages) candidates.push(...cozeResp.messages);
 
-GROUND TRUTH (NON-NEGOTIABLE):
-- Use the provided metrics EXACTLY. Do NOT change score or detail values.
-- Each metric has EXACTLY 3 details — keep same labels + values + order.
-- Detail values are ALREADY CALCULATED and are DIFFERENT for each person.
+  // 常見：role=assistant 的 content
+  const msg = candidates.find(m => m?.role === "assistant" && typeof m?.content === "string");
+  if (msg?.content) return msg.content;
 
-OUTPUT FORMAT:
-- For each card: EN primary (long, technical) + ZH secondary (short + deep).
-- ZH deep MUST contain EXACTLY these 3 section headers:
-  【系統判斷說明】
-  【細項數據如何被解讀】
-  【系統建議（為什麼是這個建議）】
+  // 有些會放 answer 字段
+  if (typeof cozeResp?.data?.answer === "string") return cozeResp.data.answer;
+  if (typeof cozeResp?.answer === "string") return cozeResp.answer;
 
-CRITICAL: Interpret each person's UNIQUE detail values:
-- Example: If "Roughness: 68" → "系統偵測到粗糙度為 68，表示..."
-- Example: If "T-Zone: 88" → "T 區數值 88，顯示..."
-- DO NOT use generic statements. EVERY detail value MUST be referenced.
+  return "";
+}
 
-TONE & VOCABULARY:
-- US product-grade: Calm, technical, logic-first.
-- FORBIDDEN: warning, danger, patient, treatment, disease, cure, medical, doctor.
-- PREFERRED: baseline, threshold, stability, variance, trajectory, cadence, cohort, signal, model, projection.
-- Use projection language: "model suggests", "trajectory indicates", "baseline shows".
-- NOT guarantees: never say "will improve" or "guaranteed".
+async function generateReportWithCoze(metrics: any[], styleSeed: string): Promise<Report> {
+  const token = mustEnv("COZE_API_TOKEN");
+  const botId = mustEnv("COZE_BOT_ID");
+  const baseURL = process.env.COZE_BASE_URL || "https://api.coze.com";
 
-PRIORITY ASSIGNMENT:
-- TEXTURE and HYDRATION are ALWAYS top 2 priority (90+).
-- Assign unique priority values (1-100), descending order.
-- Lower score + higher impact on other metrics = higher priority.
+  // ✅ 要求 Coze 嚴格回 JSON (對齊前端)
+  const prompt = `
+style_seed: ${styleSeed}
 
-CONFIDENCE:
-- All confidence values between 0.78–0.92.
-- Vary naturally based on score (lower score = slightly lower confidence).
+Return JSON ONLY (no markdown).
+Top-level keys: summary_en, summary_zh, cards.
+cards must be an array of 14 objects. Each card must include EXACT keys:
+id,title_en,title_zh,score,max,
+signal_en,recommendation_en,
+signal_zh_short,signal_zh_deep,
+recommendation_zh_short,recommendation_zh_deep,
+details (exactly 3: label_en,label_zh,value),
+priority,confidence.
 
-PERSONALIZATION:
-- Analyze RELATIONSHIPS between metrics:
-  - Low hydration + high sebum → barrier compensation pattern.
-  - High pigmentation + low brightness → clarity impact.
-  - High wrinkle + low firmness → aging acceleration signal.
-- Reference these patterns in signal_en and signal_zh_deep.
-- Make each report FEEL unique by discussing metric interactions.
+Ground truth metrics (DO NOT MODIFY scores or details):
+${JSON.stringify(metrics)}
 `.trim();
 
-  const user = `
-Metrics (ground truth — DO NOT modify):
-${JSON.stringify(metrics, null, 2)}
-
-Instructions:
-1. Interpret EACH detail value specifically (not generically).
-2. Discuss relationships between metrics to personalize the report.
-3. Assign priority: TEXTURE and HYDRATION always top 2.
-4. Confidence: 0.78–0.92 range.
-5. ZH deep: Use provided 3-section headers + interpret all 3 details.
-`.trim();
-
-  // 使用 Responses API（與你原本 edge 更一致）
-  const body = {
-    model: "gpt-5.2",
-    input: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "skin_vision_report",
-        strict: true,
-        schema,
-      },
-    },
-    temperature: 0.6,
-  };
-
-  const r = await fetch("https://api.openai.com/v1/responses", {
+  const r = await fetch(`${baseURL}/v3/chat`, {
     method: "POST",
-    headers: { "Authorization": `Bearer ${openaiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      bot_id: botId,
+      user_id: "honeytea_report_engine",
+      stream: false,
+      auto_save_history: true,
+      additional_messages: [
+        { role: "user", content: prompt, content_type: "text", type: "question" },
+      ],
+    }),
   });
 
-  const j = await r.json();
-  if (!r.ok) throw new Error(`OpenAI error: ${r.status} ${JSON.stringify(j)}`);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`COZE error: ${r.status} ${JSON.stringify(j)}`);
 
-  // 解析 responses 的 structured json
-  if (j?.output_parsed) return j.output_parsed;
-  const out = j?.output;
-  if (Array.isArray(out)) {
-    for (const item of out) {
-      const content = item?.content;
-      if (Array.isArray(content)) {
-        for (const c of content) {
-          if (c?.type === "output_json" && c?.json) return c.json;
-          if (typeof c?.text === "string") { try { return JSON.parse(c.text); } catch {} }
-        }
-      }
-    }
+  const text = pickAssistantText(j);
+  if (!text) throw new Error(`COZE empty response: ${JSON.stringify(j).slice(0, 900)}`);
+
+  const parsed = safeJsonParseMaybe(text);
+
+  // 最小驗證（避免前端炸）
+  if (!parsed?.summary_en || !parsed?.summary_zh || !Array.isArray(parsed?.cards)) {
+    throw new Error(`COZE invalid JSON shape: ${text.slice(0, 400)}`);
   }
-  throw new Error("OpenAI response parse failed");
+  if (parsed.cards.length !== 14) {
+    throw new Error(`COZE cards length != 14: got ${parsed.cards.length}`);
+  }
+
+  return parsed as Report;
 }
 
 /* =========================
    Handler
    ========================= */
+
 export default async function handler(req: Request) {
   try {
     // ✅ CORS preflight
@@ -602,26 +428,32 @@ export default async function handler(req: Request) {
 
     const form = await req.formData();
     const files = await getFiles(form);
-    files.sort((a,b)=> b.size - a.size);
+    files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
     const bytes = await Promise.all(files.map(toBytes));
     const prechecks = bytes.map(quickPrecheck);
 
+    // 1) YouCam file init + upload
     const init = await youcamInitUpload(primaryFile);
     const buf = new Uint8Array(await primaryFile.arrayBuffer());
     await youcamPutBinary(init.putUrl, buf, init.contentType);
 
+    // 2) YouCam task + poll
     const taskId = await youcamCreateTask(init.fileId, YOUCAM_HD_ACTIONS);
     const youcamJson = await youcamPollTask(taskId);
     const scoreMap = extractYoucamScores(youcamJson);
 
+    // 3) Build 14-signal metrics
     const rawMetrics = mapYoucamToRawForNarrative(scoreMap);
-    const report = await generateReportWithOpenAI(rawMetrics);
+
+    // 4) Coze generates narrative report (JSON-only)
+    const scanId = nowId();
+    const report = await generateReportWithCoze(rawMetrics, scanId);
 
     return json(req, {
       build: "skinvision_report_v1",
-      scanId: nowId(),
+      scanId,
       precheck: {
         ok: prechecks.every(p => p.ok),
         warnings: Array.from(new Set(prechecks.flatMap(p => p.warnings))),
@@ -631,7 +463,7 @@ export default async function handler(req: Request) {
       summary_zh: report.summary_zh,
       cards: report.cards,
       meta: {
-        narrative: "openai",
+        narrative: "report_engine", // 不要寫 bot/coze
         youcam_task_id: taskId,
         youcam_task_status: youcamJson?.data?.task_status,
       },
@@ -640,6 +472,7 @@ export default async function handler(req: Request) {
   } catch (e: any) {
     const msg = e?.message ?? String(e);
 
+    // YouCam retake patterns (保留你原本)
     if (msg.includes("error_src_face_too_small")) {
       return json(req, {
         error: "scan_retake",
