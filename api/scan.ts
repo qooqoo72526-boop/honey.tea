@@ -26,14 +26,39 @@ type Card = {
   confidence: number;
 };
 
-function json(data: any, status = 200) {
+/* =========================
+   ✅ CORS (Framer allowed)
+   ========================= */
+
+const ALLOWED_ORIGINS = new Set<string>([
+  "https://honeytea.framer.ai",
+  // 若你還有 framer.app 或正式網域，上線後加在這裡：
+  // "https://yourdomain.com",
+  // "https://honeytea.framer.app",
+]);
+
+function corsHeaders(req: Request) {
+  const origin = req.headers.get("origin") || "";
+  const allow =
+    ALLOWED_ORIGINS.has(origin)
+      ? origin
+      : "*"; // 保守：先放行。你正式上線後可改成只允許白名單
+
+  return {
+    "access-control-allow-origin": allow,
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "content-type",
+    "access-control-max-age": "86400",
+    "vary": "origin",
+  };
+}
+
+function json(req: Request, data: any, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "POST, OPTIONS",
-      "access-control-allow-headers": "content-type",
+      ...corsHeaders(req),
     },
   });
 }
@@ -46,6 +71,7 @@ function mustEnv(name: string) {
   return v;
 }
 
+/** image1 required; image2/3 optional */
 async function getFiles(form: FormData) {
   const f1 = form.get("image1");
   const f2 = form.get("image2");
@@ -210,7 +236,7 @@ function clampScore(x: any) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-/** ✅ 動態化 details — 每個人都不同 */
+/** ✅ 動態化 details — 每個人都不同（保留你的邏輯） */
 function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>) {
   const get = (k: string) => scoreMap.get(k);
 
@@ -236,7 +262,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Evenness", label_zh: "均勻度", value: Math.round(T_ui * 0.88 + (Math.random() * 5 - 2.5)) },
       ],
     },
-
     {
       id: "pore",
       title_en: "PORE",
@@ -248,7 +273,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Chin", label_zh: "下巴", value: Math.round(P_ui * 0.96 + (Math.random() * 5 - 2.5)) },
       ],
     },
-
     {
       id: "pigmentation",
       title_en: "PIGMENTATION",
@@ -260,7 +284,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Dullness", label_zh: "暗沉度", value: Math.round(100 - RA_ui * 0.75 + (Math.random() * 6 - 3)) },
       ],
     },
-
     {
       id: "wrinkle",
       title_en: "WRINKLE",
@@ -272,7 +295,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Nasolabial", label_zh: "法令紋", value: Math.round(100 - W_ui * 0.78 + (Math.random() * 8 - 4)) },
       ],
     },
-
     {
       id: "hydration",
       title_en: "HYDRATION",
@@ -284,7 +306,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "TEWL", label_zh: "經皮水分流失", value: M_ui > 70 ? "Low" : M_ui > 50 ? "Moderate" : "Elevated" },
       ],
     },
-
     {
       id: "sebum",
       title_en: "SEBUM",
@@ -296,7 +317,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Chin", label_zh: "下巴", value: Math.round(100 - O_ui * 0.75 + (Math.random() * 6 - 3)) },
       ],
     },
-
     {
       id: "skintone",
       title_en: "SKIN TONE",
@@ -308,7 +328,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Redness", label_zh: "紅色指數", value: Math.round(100 - R_ui * 0.80 + (Math.random() * 6 - 3)) },
       ],
     },
-
     {
       id: "sensitivity",
       title_en: "SENSITIVITY",
@@ -320,7 +339,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Irritation Response", label_zh: "刺激反應", value: R_ui > 75 ? "Low" : R_ui > 55 ? "Medium" : "Elevated" },
       ],
     },
-
     {
       id: "clarity",
       title_en: "CLARITY",
@@ -332,7 +350,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Stability", label_zh: "穩定度", value: T_ui > 65 ? "High" : T_ui > 45 ? "Medium" : "Low" },
       ],
     },
-
     {
       id: "elasticity",
       title_en: "ELASTICITY",
@@ -344,7 +361,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Variance", label_zh: "變異", value: F_ui > 60 ? "Low" : "Medium" },
       ],
     },
-
     {
       id: "redness",
       title_en: "REDNESS",
@@ -356,7 +372,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Stability", label_zh: "穩定度", value: R_ui > 65 ? "High" : R_ui > 45 ? "Medium" : "Low" },
       ],
     },
-
     {
       id: "brightness",
       title_en: "BRIGHTNESS",
@@ -368,7 +383,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Trajectory", label_zh: "軌跡", value: RA_ui > 60 ? "Improving" : "Baseline" },
       ],
     },
-
     {
       id: "firmness",
       title_en: "FIRMNESS",
@@ -380,7 +394,6 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Variance", label_zh: "變異", value: F_ui > 55 ? "Low" : "Medium" },
       ],
     },
-
     {
       id: "pores_depth",
       title_en: "PORE DEPTH",
@@ -392,12 +405,13 @@ function mapYoucamToRawForNarrative(scoreMap: Map<string, { ui: number; raw: num
         { label_en: "Stability", label_zh: "穩定度", value: P_ui > 65 ? "High" : P_ui > 45 ? "Medium" : "Variable" },
       ],
     },
-  ];
+  ] as Array<{ id: MetricId; title_en: string; title_zh: string; score: number; details: any[] }>;
 }
 
 /* =========================
    OpenAI strict JSON schema
    ========================= */
+
 function schemaForOpenAI() {
   const metricEnum: MetricId[] = [
     "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
@@ -468,24 +482,7 @@ function schemaForOpenAI() {
   };
 }
 
-function extractStructuredJson(resp: any) {
-  if (resp?.output_parsed) return resp.output_parsed;
-  const out = resp?.output;
-  if (Array.isArray(out)) {
-    for (const item of out) {
-      const content = item?.content;
-      if (Array.isArray(content)) {
-        for (const c of content) {
-          if (c?.type === "output_json" && c?.json) return c.json;
-          if (typeof c?.text === "string") { try { return JSON.parse(c.text); } catch {} }
-        }
-      }
-    }
-  }
-  throw new Error("OpenAI response parse failed");
-}
-
-/** ✅ 優化後的 OpenAI Prompt — 個性化但深度一致 */
+/** ✅ 你高級敘事：完整保留（不敷衍） */
 async function generateReportWithOpenAI(metrics: any[]) {
   const openaiKey = mustEnv("OPENAI_API_KEY");
   const schema = schemaForOpenAI();
@@ -503,7 +500,7 @@ OUTPUT FORMAT:
 - ZH deep MUST contain EXACTLY these 3 section headers:
   【系統判斷說明】
   【細項數據如何被解讀】
-  【系統建議(為什麼是這個建議)】
+  【系統建議（為什麼是這個建議）】
 
 CRITICAL: Interpret each person's UNIQUE detail values:
 - Example: If "Roughness: 68" → "系統偵測到粗糙度為 68，表示..."
@@ -547,15 +544,16 @@ Instructions:
 5. ZH deep: Use provided 3-section headers + interpret all 3 details.
 `.trim();
 
+  // 使用 Responses API（與你原本 edge 更一致）
   const body = {
-    model: "gpt-4o",
-    messages: [
+    model: "gpt-5.2",
+    input: [
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
+    text: {
+      format: {
+        type: "json_schema",
         name: "skin_vision_report",
         strict: true,
         schema,
@@ -564,7 +562,7 @@ Instructions:
     temperature: 0.6,
   };
 
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+  const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { "Authorization": `Bearer ${openaiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -572,11 +570,22 @@ Instructions:
 
   const j = await r.json();
   if (!r.ok) throw new Error(`OpenAI error: ${r.status} ${JSON.stringify(j)}`);
-  
-  const content = j.choices?.[0]?.message?.content;
-  if (!content) throw new Error("OpenAI no content");
-  
-  return JSON.parse(content);
+
+  // 解析 responses 的 structured json
+  if (j?.output_parsed) return j.output_parsed;
+  const out = j?.output;
+  if (Array.isArray(out)) {
+    for (const item of out) {
+      const content = item?.content;
+      if (Array.isArray(content)) {
+        for (const c of content) {
+          if (c?.type === "output_json" && c?.json) return c.json;
+          if (typeof c?.text === "string") { try { return JSON.parse(c.text); } catch {} }
+        }
+      }
+    }
+  }
+  throw new Error("OpenAI response parse failed");
 }
 
 /* =========================
@@ -584,8 +593,12 @@ Instructions:
    ========================= */
 export default async function handler(req: Request) {
   try {
-    if (req.method === "OPTIONS") return json({}, 200);
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+    // ✅ CORS preflight
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders(req) });
+    }
+
+    if (req.method !== "POST") return json(req, { error: "Method not allowed" }, 405);
 
     const form = await req.formData();
     const files = await getFiles(form);
@@ -606,7 +619,7 @@ export default async function handler(req: Request) {
     const rawMetrics = mapYoucamToRawForNarrative(scoreMap);
     const report = await generateReportWithOpenAI(rawMetrics);
 
-    return json({
+    return json(req, {
       build: "skinvision_report_v1",
       scanId: nowId(),
       precheck: {
@@ -628,7 +641,7 @@ export default async function handler(req: Request) {
     const msg = e?.message ?? String(e);
 
     if (msg.includes("error_src_face_too_small")) {
-      return json({
+      return json(req, {
         error: "scan_retake",
         code: "error_src_face_too_small",
         tips: [
@@ -641,7 +654,7 @@ export default async function handler(req: Request) {
     }
 
     if (msg.includes("error_lighting_dark")) {
-      return json({
+      return json(req, {
         error: "scan_retake",
         code: "error_lighting_dark",
         tips: [
@@ -652,7 +665,7 @@ export default async function handler(req: Request) {
     }
 
     if (msg.includes("error_src_face_out_of_bound")) {
-      return json({
+      return json(req, {
         error: "scan_retake",
         code: "error_src_face_out_of_bound",
         tips: [
@@ -662,10 +675,6 @@ export default async function handler(req: Request) {
       }, 200);
     }
 
-    return json({ error: "scan_failed", message: msg }, 500);
-  }
-}
-
-    return json({ error: "scan_failed", message: msg }, 500);
+    return json(req, { error: "scan_failed", message: msg }, 500);
   }
 }
