@@ -1,6 +1,6 @@
 // app/api/scan/route.ts
 // HONEY.TEA — Skin Vision Scan API (App Router / Node Runtime)
-// 這是給網站用的後端 API，支援長連線和圖片上傳
+// 這是給 "網站" 用的後端 API (Vercel App Router)，支援長連線和圖片上傳
 
 import { NextResponse } from "next/server";
 
@@ -12,7 +12,7 @@ export const maxDuration = 60;
 const ALLOWED_ORIGINS = new Set(["https://honeytea.framer.ai", "https://honeytea.framer.website"]);
 
 function corsHeaders(origin: string) {
-  // 如果來源在白名單內，就允許該來源；否則允許所有 (或根據需求調整)
+  // 這裡允許你的網站跨域存取
   const allow = ALLOWED_ORIGINS.has(origin) ? origin : "*";
   return {
     "Access-Control-Allow-Origin": allow,
@@ -22,7 +22,10 @@ function corsHeaders(origin: string) {
 }
 
 function jsonResponse(data: any, status = 200, origin: string) {
-  return new NextResponse(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...corsHeaders(origin) } });
+  return new NextResponse(JSON.stringify(data), { 
+    status, 
+    headers: { "Content-Type": "application/json", ...corsHeaders(origin) } 
+  });
 }
 
 function mustEnv(name: string) {
