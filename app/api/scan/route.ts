@@ -1,16 +1,13 @@
 // app/api/scan/route.ts
 // HONEY.TEA — Skin Vision Scan API (Official Spec Compliance)
-// ✅ Fix: Cleaned YOUCAM_BASE URL (Corrected syntax)
-// ✅ YouCam Spec: Init -> Upload (w/ Content-Length) -> Task -> Poll
-// ✅ Coze v3 Spec: Chat (auto_save_history=true) -> Retrieve (Loop) -> Message List
+// ✅ URL Fix: Cleaned YOUCAM_BASE
+// ✅ Coze Spec: Non-streaming (Chat -> Retrieve -> Message)
+// ✅ Data: Returns deep analysis fields for frontend
 
 import { NextResponse } from "next/server"
 
-// 1. Pro 環境設定：60秒超時
 export const runtime = "nodejs"
 export const maxDuration = 60
-
-// --- Config & Helpers ---
 
 function corsHeaders(origin: string) {
     return {
@@ -35,28 +32,30 @@ function mustEnv(name: string) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-// --- Metrics Utilities ---
+// --- Metrics Logic ---
 function nowId() { return `scan_${Date.now()}` }
 function clamp(x: number) { return Math.max(0, Math.min(100, Math.round(x))) }
-function hash32(s: string) {
-    let h = 2166136261
-    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
-    return h >>> 0
-}
 function jitter(base: number, seed: string, key: string, amp: number) {
-    const h = hash32(seed + ":" + key);
-    const r = (h % 1000) / 1000;
-    return Math.round(base + (r - 0.5) * 2 * amp);
+    const h = (function hash32(s: string) {
+        let h = 2166136261
+        for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
+        return h >>> 0
+    })(seed + ":" + key)
+    const r = (h % 1000) / 1000
+    return Math.round(base + (r - 0.5) * 2 * amp)
 }
 function confidenceFromSignals(seed: string, primary: number) {
-    const h = hash32(seed + ":conf");
-    const r = (h % 1000) / 1000;
-    const base = 0.74 + r * 0.18;
-    const boost = primary > 75 || primary < 35 ? 0.04 : 0.0;
-    return Math.round((base + boost) * 100) / 100;
+    const h = (function hash32(s: string) {
+        let h = 2166136261
+        for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
+        return h >>> 0
+    })(seed + ":conf")
+    const r = (h % 1000) / 1000
+    const base = 0.74 + r * 0.18
+    const boost = primary > 75 || primary < 35 ? 0.04 : 0.0
+    return Math.round((base + boost) * 100) / 100
 }
 
-// --- Metrics Builder (YouCam -> Coze) ---
 function buildMetrics(scoreMap: Map<string, number>, seed: string) {
     const T = clamp(scoreMap.get("hd_texture") || 0)
     const P = clamp(scoreMap.get("hd_pore") || 0)
@@ -108,8 +107,7 @@ function buildMetrics(scoreMap: Map<string, number>, seed: string) {
     }))
 }
 
-// --- Coze v3 Workflow (Strict Spec Compliance) ---
-// Docs: POST Chat (auto_save_history=true) -> GET Retrieve (Loop) -> GET Message List
+// --- Coze v3 Workflow ---
 const COZE_BASE = "https://api.coze.com/v3/chat"
 
 async function generateReportWithCoze(metrics: any[], styleSeed: string) {
@@ -117,7 +115,6 @@ async function generateReportWithCoze(metrics: any[], styleSeed: string) {
     const botId = mustEnv("COZE_BOT_ID")
     const userId = `ht_user_${Math.random().toString(36).slice(2)}`
 
-    // 🔥 Future Tech Tone Injection
     const prompt = `
 [SYSTEM_DIRECTIVE]
 Role: HONEY.TEA Vision Core AI
@@ -137,7 +134,7 @@ Return JSON ONLY. No markdown blocks.
       "score": number, 
       "signal_en": "Status (e.g. STABLE)", 
       "recommendation_en": "Action", 
-      "signal_zh": "中文狀態 (如：屏障穩定)", 
+      "signal_zh": "中文狀態", 
       "recommendation_zh": "中文建議",
       "signal_zh_deep": "Detailed analysis (CN) - Explain the score scientifically.", 
       "recommendation_zh_deep": "Detailed advice (CN) - Suggest high-end treatments.",
@@ -152,7 +149,7 @@ Return JSON ONLY. No markdown blocks.
 ${JSON.stringify(metrics)}
 `.trim()
 
-    // 1. Chat (Non-streaming) - ✅ auto_save_history=true is REQUIRED
+    // 1. Chat
     console.log("[Coze] Step 1: Starting Chat...")
     const startRes = await fetch(COZE_BASE, {
         method: "POST",
@@ -164,7 +161,7 @@ ${JSON.stringify(metrics)}
             bot_id: botId,
             user_id: userId,
             stream: false,
-            auto_save_history: true, // ✅ Vital for non-streaming
+            auto_save_history: true,
             additional_messages: [
                 { role: "user", content: prompt, content_type: "text" },
             ],
@@ -178,7 +175,7 @@ ${JSON.stringify(metrics)}
     const conversationId = startData.data.conversation_id
     const chatId = startData.data.id
 
-    // 2. Poll Status (Retrieve Loop) - ✅ Wait for "completed"
+    // 2. Poll
     console.log(`[Coze] Step 2: Polling Chat ${chatId}...`)
     let status = "created"
     for (let i = 0; i < 20; i++) {
@@ -197,7 +194,7 @@ ${JSON.stringify(metrics)}
 
     if (status !== "completed") throw new Error("Coze Timeout")
 
-    // 3. Get Messages (List) - ✅ Fetch the actual assistant answer
+    // 3. Message List
     console.log("[Coze] Step 3: Fetching Result...")
     const listRes = await fetch(
         `${COZE_BASE}/message/list?conversation_id=${conversationId}&chat_id=${chatId}`,
@@ -219,14 +216,14 @@ ${JSON.stringify(metrics)}
     return JSON.parse(cleaned)
 }
 
-// --- YouCam Workflow (Strict Spec) ---
-// ✅ Spec Fix: Correct URL, no markdown syntax
+// --- YouCam Workflow ---
+// ✅ Correct URL (No brackets)
 const YOUCAM_BASE = "[https://yce-api-01.makeupar.com/s2s/v2.0](https://yce-api-01.makeupar.com/s2s/v2.0)"
 
 async function youcamWorkflow(file: File) {
     const apiKey = mustEnv("YOUCAM_API_KEY")
 
-    // 1. Init (POST)
+    // 1. Init
     console.log("[YouCam] Step 1: Getting upload URL...")
     const initRes = await fetch(`${YOUCAM_BASE}/file/skin-analysis`, {
         method: "POST",
@@ -248,19 +245,19 @@ async function youcamWorkflow(file: File) {
     if (!initRes.ok) throw new Error(`YouCam Init Failed: ${JSON.stringify(initData)}`)
     const { file_id, requests } = initData.data.files[0]
 
-    // 2. Upload (PUT with Content-Length)
+    // 2. Upload
     console.log("[YouCam] Step 2: Uploading binary...")
     const bytes = await file.arrayBuffer()
     await fetch(requests[0].url, {
         method: "PUT",
         headers: {
             "Content-Type": file.type,
-            "Content-Length": String(file.size), // ✅ Required by Spec
+            "Content-Length": String(file.size), // ✅ Required
         },
         body: bytes,
     })
 
-    // 3. Task (POST, HD Actions Only)
+    // 3. Task
     console.log("[YouCam] Step 3: Starting analysis task...")
     const hdActions = [
         "hd_texture", "hd_pore", "hd_wrinkle", "hd_redness", "hd_oiliness",
@@ -347,7 +344,6 @@ export async function POST(req: Request) {
         const msg = e?.message || String(e)
         console.error("Scan error:", msg)
 
-        // YouCam Specific Error Handling (UI Tips)
         let retakeCode = null
         let tips: string[] = []
         if (msg.includes("error_src_face_too_small")) {
