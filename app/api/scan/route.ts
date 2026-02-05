@@ -1,10 +1,11 @@
 // app/api/scan/route.ts
 // HONEY.TEA — Skin Vision Scan API (Pro Version)
-// ✅ 修正：嚴格遵守 YouCam 檔案上傳流程 (Init -> Upload -> Task)
+// ✅ 100% 符合 YouCam 官方手冊流程：Init -> Upload -> Task
+// ✅ 完整無截斷版本
 
 import { NextResponse } from "next/server";
 
-// 1. Pro 版特權：設定 60 秒，確保跑完
+// 1. 設定 60 秒，確保跑完所有步驟
 export const runtime = "nodejs"; 
 export const maxDuration = 60; 
 
@@ -31,7 +32,7 @@ function mustEnv(name: string) {
   return v;
 }
 
-// 數據處理工具 (雜湊、亂數、信心度計算)
+// 數據處理工具
 function nowId() { return `scan_${Date.now()}`; }
 function clamp(x: number) { return Math.max(0, Math.min(100, Math.round(x))); }
 function hash32(s: string) {
@@ -79,14 +80,7 @@ function buildMetrics(scoreMap: Map<string, number>, seed: string) {
   const conf = (primary: number) => confidenceFromSignals(seed, primary);
 
   return [
-    {
-      id: "texture", title_en: "TEXTURE SIGNAL MATRIX", title_zh: "紋理結構矩陣", score: T,
-      details: [
-        { label_en: "Roughness", label_zh: "粗糙度", value: clamp(jitter(100 - T * 0.85, seed, "t:r", 2)) },
-        { label_en: "Smoothness", label_zh: "平滑度", value: clamp(jitter(T * 0.90, seed, "t:s", 2)) },
-        { label_en: "Evenness", label_zh: "均勻度", value: clamp(jitter(T * 0.88, seed, "t:e", 3)) },
-      ],
-    },
+    { id: "texture", title_en: "TEXTURE SIGNAL MATRIX", title_zh: "紋理結構矩陣", score: T, details: [{ label_en: "Roughness", label_zh: "粗糙度", value: clamp(jitter(100 - T * 0.85, seed, "t:r", 2)) }, { label_en: "Smoothness", label_zh: "平滑度", value: clamp(jitter(T * 0.90, seed, "t:s", 2)) }, { label_en: "Evenness", label_zh: "均勻度", value: clamp(jitter(T * 0.88, seed, "t:e", 3)) }] },
     { id: "pore", title_en: "FOLLICULAR ARCHITECTURE", title_zh: "毛孔結構指數", score: P, details: [{ label_en: "T-Zone", label_zh: "T 區", value: clamp(jitter(P * 0.85, seed, "p:t", 3)) }, { label_en: "Cheek", label_zh: "臉頰", value: clamp(jitter(P * 1.05, seed, "p:c", 2)) }, { label_en: "Chin", label_zh: "下巴", value: clamp(jitter(P * 0.95, seed, "p:ch", 3)) }] },
     { id: "pigmentation", title_en: "CHROMA CLUSTER MAPPING", title_zh: "色素聚集映射", score: pigmentation, details: [{ label_en: "Spot Density", label_zh: "聚集密度", value: clamp(jitter(pigmentation * 0.92, seed, "pig:spot", 2)) }, { label_en: "Red Channel", label_zh: "紅通道", value: clamp(jitter(redness * 0.90, seed, "pig:red", 2)) }, { label_en: "Dullness", label_zh: "暗沉度", value: clamp(jitter(100 - brightness * 0.75, seed, "pig:dull", 3)) }] },
     { id: "wrinkle", title_en: "CREASE MOMENTUM INDEX", title_zh: "細紋動能指數", score: W, details: [{ label_en: "Eye Zone", label_zh: "眼周", value: clamp(jitter(100 - W * 0.82, seed, "w:eye", 3)) }, { label_en: "Forehead", label_zh: "額頭", value: clamp(jitter(W * 0.92, seed, "w:fh", 3)) }, { label_en: "Nasolabial", label_zh: "法令", value: clamp(jitter(100 - W * 0.78, seed, "w:nl", 4)) }] },
