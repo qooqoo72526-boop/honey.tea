@@ -1,17 +1,16 @@
 // app/api/scan/route.ts
-// HONEY.TEA — Skin Vision Scan API (App Router / Node Runtime)
-// ✅ 已修正網址格式 & 開啟全網域連線
+// HONEY.TEA — Skin Vision Scan API (Pro Version)
+// 最終版：專門承接 Framer 上傳，串接 YouCam 與 Coze
 
 import { NextResponse } from "next/server";
 
-// ✅ 1. 設定 Node.js runtime 以支援 YouCam 的長時間分析 (60秒)
-// (你已經付費升級 Pro，這行會生效，保證不切斷)
+// ✅ 1. Pro 版特權：設定 60 秒寬限期，防止 YouCam 分析太久被切斷
 export const runtime = "nodejs"; 
 export const maxDuration = 60; 
 
 // --- Config & Helpers ---
 
-// ✅ 2. 修正：CORS 全開，確保你的 Framer 不管在哪個網址都能連上
+// ✅ 2. CORS 全開：讓你的 Framer (不管網址是什麼) 都能順利連進來
 function corsHeaders(origin: string) {
   return {
     "Access-Control-Allow-Origin": "*", 
@@ -20,6 +19,7 @@ function corsHeaders(origin: string) {
   };
 }
 
+// 統一回傳格式 helper
 function jsonResponse(data: any, status = 200, origin: string) {
   return new NextResponse(JSON.stringify(data), { 
     status, 
@@ -27,13 +27,14 @@ function jsonResponse(data: any, status = 200, origin: string) {
   });
 }
 
+// 檢查環境變數 helper
 function mustEnv(name: string) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
   return v;
 }
 
-// 雜湊與隨機數邏輯 (維持原樣)
+// --- 數據處理工具 (雜湊、亂數、信心度計算) ---
 function nowId() { return `scan_${Date.now()}`; }
 function clamp(x: number) { return Math.max(0, Math.min(100, Math.round(x))); }
 function hash32(s: string) {
@@ -54,7 +55,7 @@ function confidenceFromSignals(seed: string, primary: number) {
   return Math.round((base + boost) * 100) / 100;
 }
 
-// --- 核心邏輯：14 個指標 (維持原樣) ---
+// --- 核心指標整理：把 YouCam 的分數轉成前端卡片格式 ---
 function buildMetrics(scoreMap: Map<string, number>, seed: string) {
   const T = clamp(scoreMap.get("hd_texture") || 0);
   const P = clamp(scoreMap.get("hd_pore") || 0);
@@ -66,7 +67,7 @@ function buildMetrics(scoreMap: Map<string, number>, seed: string) {
   const F = clamp(scoreMap.get("hd_firmness") || 0);
   const RA = clamp(scoreMap.get("hd_radiance") || 0);
 
-  // Derived composites
+  // 計算衍生指標 (讓數據更豐富)
   const tone = clamp(jitter((RA * 0.6 + (100 - A) * 0.25 + (100 - R) * 0.15), seed, "tone", 2));
   const brightness = clamp(jitter(RA * 0.92, seed, "brightness", 2));
   const clarity = clamp(jitter((RA * 0.55 + (100 - A) * 0.25 + T * 0.20), seed, "clarity", 2));
@@ -81,6 +82,7 @@ function buildMetrics(scoreMap: Map<string, number>, seed: string) {
 
   const conf = (primary: number) => confidenceFromSignals(seed, primary);
 
+  // 定義 14 張卡片的細節
   return [
     {
       id: "texture", title_en: "TEXTURE SIGNAL MATRIX", title_zh: "紋理結構矩陣", score: T,
@@ -209,7 +211,7 @@ function buildMetrics(scoreMap: Map<string, number>, seed: string) {
   });
 }
 
-// --- Coze Helper ---
+// --- Coze Bot 串接 (負責寫文案) ---
 function pickAssistantText(cozeResp: any) {
   const candidates: any[] = [];
   if (cozeResp?.data?.messages) candidates.push(...cozeResp.data.messages);
@@ -252,13 +254,13 @@ Ground truth metrics: ${JSON.stringify(metrics)}
   return JSON.parse(cleaned);
 }
 
-// --- YouCam Wrappers ---
-// ✅ 3. 修正：這裡原本有奇怪的符號 []，已經拿掉了，這樣才能連線
+// --- YouCam 串接 (負責看皮膚) ---
+// ✅ 3. 網址修正：這是乾淨的 API 網址，沒有中括號，不會報錯
 const YOUCAM_BASE = "[https://yce-api-01.makeupar.com/s2s/v2.0](https://yce-api-01.makeupar.com/s2s/v2.0)";
 
 async function youcamWorkflow(file: File) {
     const apiKey = mustEnv("YOUCAM_API_KEY");
-    // 1. Init
+    // 1. 初始化
     const initRes = await fetch(`${YOUCAM_BASE}/file/skin-analysis`, {
         method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ files: [{ content_type: file.type, file_name: "scan.jpg", file_size: file.size }] })
@@ -267,11 +269,11 @@ async function youcamWorkflow(file: File) {
     if (initData.status !== 200) throw new Error("YouCam init failed");
     const { file_id, requests } = initData.data.files[0];
     
-    // 2. Upload
+    // 2. 上傳圖片
     const bytes = await file.arrayBuffer();
     await fetch(requests[0].url, { method: "PUT", headers: { "Content-Type": file.type }, body: bytes });
 
-    // 3. Create Task
+    // 3. 建立分析任務
     const taskRes = await fetch(`${YOUCAM_BASE}/task/skin-analysis`, {
         method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ src_file_id: file_id, dst_actions: ["hd_texture", "hd_pore", "hd_wrinkle", "hd_redness", "hd_oiliness", "hd_age_spot", "hd_radiance", "hd_moisture", "hd_firmness"], format: "json" })
@@ -279,7 +281,7 @@ async function youcamWorkflow(file: File) {
     const taskData = await taskRes.json();
     const taskId = taskData.data.task_id;
 
-    // 4. Poll (Pro版 支援 60s)
+    // 4. 等待 YouCam 結果 (Pro版 支援 60s)
     for (let i = 0; i < 40; i++) {
         await new Promise(r => setTimeout(r, 1500));
         const pollRes = await fetch(`${YOUCAM_BASE}/task/skin-analysis/${taskId}`, { headers: { Authorization: `Bearer ${apiKey}` } });
@@ -294,7 +296,8 @@ async function youcamWorkflow(file: File) {
     throw new Error("YouCam timeout");
 }
 
-// --- Route Handlers ---
+// --- 主要執行入口 (API Endpoint) ---
+// 這裡就是「承接」你 Framer 的地方
 
 export async function OPTIONS(req: Request) {
   const origin = req.headers.get("origin") || "";
@@ -304,16 +307,23 @@ export async function OPTIONS(req: Request) {
 export async function POST(req: Request) {
   const origin = req.headers.get("origin") || "";
   try {
+    // 👇 這行就是關鍵！它承接了 Framer 丟過來的 FormData
     const formData = await req.formData();
     const file = formData.get("image1") as File;
     if (!file) throw new Error("Missing image1");
 
-    // Run Workflows
+    // 👇 順序絕對正確：
+    // 1. 先跑 YouCam (用 YOUCAM_API_KEY)
     const { map, taskId } = await youcamWorkflow(file);
+    
+    // 整理 YouCam 的資料
     const scanId = `scan_${Date.now()}`;
     const rawMetrics = buildMetrics(map, scanId);
+
+    // 2. 再跑 Coze (用 COZE_API_TOKEN, COZE_BOT_ID) 把 YouCam 的結果給它
     const report = await generateReportWithCoze(rawMetrics, scanId);
 
+    // 3. 回傳給你的 Framer (ScanResults.tsx 會收到這個)
     return jsonResponse({
         scanId,
         summary_en: report.summary_en,
@@ -326,7 +336,7 @@ export async function POST(req: Request) {
     const msg = e?.message || String(e);
     console.error("Scan error:", msg);
     
-    // Retake logic
+    // 錯誤處理 (如果臉太小、光線太暗...)
     let retakeCode = null;
     let tips: string[] = [];
     if (msg.includes("error_src_face_too_small")) { retakeCode = "error_src_face_too_small"; tips = ["Move closer.", "Center face."]; }
