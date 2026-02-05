@@ -1,3 +1,4 @@
+// api/scan.ts
 export const config = {
   runtime: "edge",
   regions: ["sin1", "hnd1", "icn1"],
@@ -15,12 +16,11 @@ type Card = {
   score: number;
   max: 100;
 
-  // 你前端已經在用的欄位：保持不破壞
-  signal_en: string;         // EN 主敘事（長）
-  signal_zh: string;         // ZH 深層完整版（長）
+  signal_en: string;
+  signal_zh: string;
   details: { label_en: string; label_zh: string; value: number | string }[];
-  recommendation_en: string; // EN 建議（長）
-  recommendation_zh: string; // ZH 建議（長）
+  recommendation_en: string;
+  recommendation_zh: string;
 
   priority: number;
   confidence: number;
@@ -34,11 +34,15 @@ function json(data: any, status = 200) {
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "POST, OPTIONS",
       "access-control-allow-headers": "content-type",
+      "access-control-max-age": "86400",
     },
   });
 }
 
-function nowId() { return `scan_${Date.now()}`; }
+function nowId() {
+  // Edge 有 crypto.randomUUID()
+  try { return `scan_${crypto.randomUUID()}`; } catch { return `scan_${Date.now()}`; }
+}
 
 /** ✅ 支援 1~3 張：image1 必填；image2/3 可選 */
 async function getFiles(form: FormData) {
@@ -82,7 +86,7 @@ function quickPrecheck(bytes: Uint8Array) {
 }
 
 /* =========================
-   YouCam — HD Skin Analysis
+   YouCam — HD Skin Analysis (S2S V2)
    ========================= */
 
 const YOUCAM_BASE = "https://yce-api-01.makeupar.com/s2s/v2.0";
@@ -91,9 +95,15 @@ const YOUCAM_TASK_CREATE = `${YOUCAM_BASE}/task/skin-analysis`;
 const YOUCAM_TASK_GET = (taskId: string) => `${YOUCAM_BASE}/task/skin-analysis/${taskId}`;
 
 function mustEnv(name: string) {
-  const v = process.env[name];
+  const v = (process as any)?.env?.[name];
   if (!v) throw new Error(`Missing env: ${name}`);
   return v;
+}
+
+function withTimeout(ms: number) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
+  return { signal: ac.signal, clear: () => clearTimeout(t) };
 }
 
 async function youcamInitUpload(file: File) {
@@ -107,13 +117,15 @@ async function youcamInitUpload(file: File) {
     }],
   };
 
+  const to = withTimeout(20000);
   const r = await fetch(YOUCAM_FILE_ENDPOINT, {
     method: "POST",
     headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-  });
+    signal: to.signal,
+  }).finally(to.clear);
 
-  const j = await r.json();
+  const j = await r.json().catch(() => ({}));
   if (!r.ok || j.status !== 200) throw new Error(`YouCam file init failed: ${r.status} ${JSON.stringify(j)}`);
 
   const f = j.data?.files?.[0];
@@ -124,11 +136,15 @@ async function youcamInitUpload(file: File) {
 }
 
 async function youcamPutBinary(putUrl: string, fileBytes: Uint8Array, contentType: string) {
+  // ✅ Edge 最常見炸點：不要手動塞 Content-Length
+  const to = withTimeout(25000);
   const r = await fetch(putUrl, {
     method: "PUT",
-    headers: { "Content-Type": contentType, "Content-Length": String(fileBytes.length) },
+    headers: { "Content-Type": contentType },
     body: fileBytes,
-  });
+    signal: to.signal,
+  }).finally(to.clear);
+
   if (!r.ok) {
     const t = await r.text().catch(() => "");
     throw new Error(`YouCam PUT failed: ${r.status} ${t}`);
@@ -150,13 +166,15 @@ async function youcamCreateTask(srcFileId: string, dstActions: string[]) {
     format: "json",
   };
 
+  const to = withTimeout(20000);
   const r = await fetch(YOUCAM_TASK_CREATE, {
     method: "POST",
     headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-  });
+    signal: to.signal,
+  }).finally(to.clear);
 
-  const j = await r.json();
+  const j = await r.json().catch(() => ({}));
   if (!r.ok || j.status !== 200 || !j.data?.task_id) {
     throw new Error(`YouCam task create failed: ${r.status} ${JSON.stringify(j)}`);
   }
@@ -171,12 +189,14 @@ async function youcamPollTask(taskId: string, maxMs = 65000) {
   let wait = 1200;
 
   while (Date.now() - start < maxMs) {
+    const to = withTimeout(20000);
     const r = await fetch(YOUCAM_TASK_GET(taskId), {
       method: "GET",
       headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    });
+      signal: to.signal,
+    }).finally(to.clear);
 
-    const j = await r.json();
+    const j = await r.json().catch(() => ({}));
     if (!r.ok || j.status !== 200) throw new Error(`YouCam task poll failed: ${r.status} ${JSON.stringify(j)}`);
 
     const st = j.data?.task_status;
@@ -316,7 +336,6 @@ function cardSchema() {
     "clarity","elasticity","redness","brightness","firmness","pores_depth",
   ];
 
-  // JSON Schema for strict output
   return {
     type: "object",
     additionalProperties: false,
@@ -343,11 +362,8 @@ function cardSchema() {
             title_zh: { type: "string", minLength: 1 },
             score: { type: "integer", minimum: 0, maximum: 100 },
             max: { type: "integer", enum: [100] },
-
-            // 你要長篇：強制長度
             signal_en: { type: "string", minLength: 180 },
             signal_zh: { type: "string", minLength: 500 },
-
             details: {
               type: "array",
               minItems: 3,
@@ -363,10 +379,8 @@ function cardSchema() {
                 },
               },
             },
-
             recommendation_en: { type: "string", minLength: 120 },
             recommendation_zh: { type: "string", minLength: 300 },
-
             priority: { type: "integer", minimum: 1, maximum: 100 },
             confidence: { type: "number", minimum: 0, maximum: 1 },
           },
@@ -417,7 +431,6 @@ function buildMetricsPayload(raw: any) {
 }
 
 function extractStructuredJson(resp: any) {
-  // Try several shapes (SDK-less parsing)
   if (resp?.output_parsed) return resp.output_parsed;
 
   const out = resp?.output;
@@ -430,6 +443,9 @@ function extractStructuredJson(resp: any) {
           if (typeof c?.text === "string") {
             try { return JSON.parse(c.text); } catch {}
           }
+          if (typeof c?.output_text === "string") {
+            try { return JSON.parse(c.output_text); } catch {}
+          }
         }
       }
     }
@@ -438,7 +454,7 @@ function extractStructuredJson(resp: any) {
 }
 
 async function generateCardsWithOpenAI(metrics: any[]) {
-  const openaiKey = mustEnv("OPENAI_API_KEY"); // 你說你已設定
+  const openaiKey = mustEnv("OPENAI_API_KEY");
   const schema = cardSchema();
 
   const system = `
@@ -453,12 +469,11 @@ HARD RULES (must obey):
 - Preferred terms: baseline, threshold, stability, variance, trajectory, cadence, cohort.
 - Output must follow the JSON schema strictly.
 
-STRUCTURE per card (content guidance):
-- signal_en: multi-paragraph, includes: (1) 1-2 line verdict, (2) why it matters, (3) how to interpret the 3 details.
-- signal_zh: Chinese deep full version including:
-  【系統判斷說明】, 【細項數據如何被解讀】, 【系統建議（為什麼是這個建議）】
-- recommendation_en: 2-4 sentences, includes quantified expectation ONLY if framed as a model projection and not a guarantee.
-- recommendation_zh: Chinese deep recommendation, logic-first, consistency-first.
+STRUCTURE per card:
+- signal_en: verdict → why it matters → interpret the 3 details.
+- signal_zh: include 【系統判斷說明】, 【細項數據如何被解讀】, 【系統建議（為什麼是這個建議）】
+- recommendation_en: 2–4 sentences, projection not guarantee.
+- recommendation_zh: logic-first, consistency-first.
 
 Return 14 cards, one per metric id (no missing).
 `.trim();
@@ -475,7 +490,7 @@ Additional constraints:
 `.trim();
 
   const body = {
-    model: "gpt-5.2", // latest model family supported in Responses API docs
+    model: "gpt-5.2",
     input: [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -488,10 +503,10 @@ Additional constraints:
         schema,
       },
     },
-    // 讓敘事每次有變化，但不亂：中低溫
     temperature: 0.6,
   };
 
+  const to = withTimeout(45000);
   const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -499,36 +514,35 @@ Additional constraints:
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-  });
+    signal: to.signal,
+  }).finally(to.clear);
 
-  const j = await r.json();
+  const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`OpenAI error: ${r.status} ${JSON.stringify(j)}`);
-
   return extractStructuredJson(j);
 }
 
 /* =========================
-   Fallback buildCards (keep your current)
+   Fallback buildCards (保底)
    ========================= */
 function buildCards(raw: any): Card[] {
-  // 你原本的版本（保底）：我保持不改動
   const cards: Card[] = [
     {
       id:"texture", title_en:"TEXTURE", title_zh:"紋理", score: raw.texture.score, max:100,
       signal_en:"Your texture signal sits below the cohort baseline. Not a warning — a clear starting point for refinement.",
-      signal_zh:"（fallback）",
+      signal_zh:"（fallback）\n【系統判斷說明】此為保底敘事。\n【細項數據如何被解讀】以你提供的 details 為準。\n【系統建議】先以穩定節奏建立基準。",
       details: raw.texture.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-      recommendation_en:"Focus on barrier re-stabilization and water retention.",
-      recommendation_zh:"（fallback）",
+      recommendation_en:"Focus on barrier re-stabilization and water retention. Keep cadence stable for 14 days before adjusting.",
+      recommendation_zh:"（fallback）先做穩定與保水；維持 14 天節奏後再做第二輪調整。",
       priority: 95, confidence: 0.9
     },
     {
       id:"hydration", title_en:"HYDRATION", title_zh:"含水與屏障", score: raw.hydration.score, max:100,
-      signal_en:"Hydration sits below the ideal reference band.",
-      signal_zh:"（fallback）",
+      signal_en:"Hydration sits below the ideal reference band. This affects clarity, texture, and signal stability across the report.",
+      signal_zh:"（fallback）\n【系統判斷說明】含水是穩定其它訊號的底盤。\n【細項數據如何被解讀】以你提供的 details 為準。\n【系統建議】先把節奏固定，不追求爆衝。",
       details: raw.hydration.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-      recommendation_en:"Prioritize ceramides + humectants.",
-      recommendation_zh:"（fallback）",
+      recommendation_en:"Prioritize ceramides + humectants. Avoid aggressive cycles until baseline stabilizes.",
+      recommendation_zh:"（fallback）先做屏障與保水，不要同時上高刺激週期。",
       priority: 92, confidence: 0.88
     },
     ...(["pore","pigmentation","wrinkle","sebum","skintone","sensitivity","clarity","elasticity","redness","brightness","firmness","pores_depth"] as MetricId[])
@@ -556,11 +570,11 @@ function buildCards(raw: any): Card[] {
           title_zh: zh,
           score: m.score,
           max: 100,
-          signal_en: "Signal extracted from multi-view input. Interpretation prioritizes baseline, stability, and trajectory.",
-          signal_zh: "（fallback）",
+          signal_en: "Signal extracted from the input. Interpretation prioritizes baseline, stability, and trajectory.",
+          signal_zh: "（fallback）\n【系統判斷說明】以穩定性與趨勢為核心。\n【細項數據如何被解讀】以 details 為準。\n【系統建議】先固定節奏再追求提升。",
           details: m.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-          recommendation_en: "Stability-first.",
-          recommendation_zh: "（fallback）",
+          recommendation_en: "Stability-first. Keep cadence consistent before tightening the cycle.",
+          recommendation_zh: "（fallback）先穩定，再收斂。",
           priority: 80 - idx,
           confidence: 0.82
         } as Card;
@@ -579,40 +593,50 @@ export default async function handler(req: Request) {
     if (req.method === "OPTIONS") return json({}, 200);
     if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
+    const ct = req.headers.get("content-type") || "";
+    if (!ct.includes("multipart/form-data")) {
+      return json({ error: "bad_request", message: "Expect multipart/form-data" }, 400);
+    }
+
     const form = await req.formData();
     const files = await getFiles(form);
 
-    // 用最大張當主圖
+    // 主圖：挑最大張
     files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
-    const bytes = await Promise.all(files.map(toBytes));
-    const prechecks = bytes.map(quickPrecheck);
+    const bytesAll = await Promise.all(files.map(toBytes));
+    const prechecks = bytesAll.map(quickPrecheck);
+
+    // ✅ 先用你的 quickPrecheck 擋掉明顯不合格（省錢也更快）
+    const allOk = prechecks.every(p => p.ok);
+    if (!allOk) {
+      return json({
+        error: "scan_retake",
+        code: "precheck_failed",
+        tips: Array.from(new Set(prechecks.flatMap(p => p.tips))).slice(0, 6),
+      }, 200);
+    }
 
     const youcam = await analyzeWithYouCamSingle(primaryFile);
-
-    // ✅ 真分數（YouCam）→ 組 payload → OpenAI 生成長敘事
     const metricsPayload = buildMetricsPayload(youcam.raw);
 
     let openaiOut: any = null;
     try {
       openaiOut = await generateCardsWithOpenAI(metricsPayload);
-    } catch (e:any) {
-      // OpenAI 掛了就 fallback
+    } catch {
       openaiOut = null;
     }
 
-    const finalCards: Card[] = openaiOut?.cards
-      ? openaiOut.cards
-      : buildCards(youcam.raw);
+    const finalCards: Card[] = openaiOut?.cards ? openaiOut.cards : buildCards(youcam.raw);
 
     return json({
-      build: "honeytea_scan_youcam_openai_v1",
+      build: "honeytea_scan_youcam_openai_v2",
       scanId: nowId(),
       precheck: {
-        ok: prechecks.every(p => p.ok),
-        warnings: Array.from(new Set(prechecks.flatMap(p => p.warnings))),
-        tips: Array.from(new Set(prechecks.flatMap(p => p.tips))),
+        ok: true,
+        warnings: [],
+        tips: [],
       },
       cards: finalCards,
       summary_en: openaiOut?.summary_en ?? "Skin analysis complete. Signals generated.",
@@ -628,6 +652,7 @@ export default async function handler(req: Request) {
   } catch (e: any) {
     const msg = e?.message ?? String(e);
 
+    // 你原本的 retake 映射保留
     if (msg.includes("error_src_face_too_small")) {
       return json({
         error: "scan_retake",
@@ -666,3 +691,4 @@ export default async function handler(req: Request) {
     return json({ error: "scan_failed", message: msg }, 500);
   }
 }
+
