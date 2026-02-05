@@ -1,11 +1,12 @@
 // app/api/scan/route.ts
-// HONEY.TEA — Skin Vision Scan API (Official Spec Compliance)
-// ✅ Spec Check: Follows YouCam v2.0 File API -> Task API Flow
-// ✅ Fix: Clean URL, Correct Headers (Content-Length), HD-only actions
+// HONEY.TEA — Skin Vision Scan API (Official Spec Compliance Edition)
+// ✅ YouCam Compliance: Init -> Upload (w/ Content-Length) -> Task -> Poll
+// ✅ Coze v3 Compliance: Chat (Non-stream) -> Poll Status (Retrieve) -> Get Messages (List)
+// ✅ Environment: Node.js Runtime (60s timeout)
 
 import { NextResponse } from "next/server";
 
-// 1. Pro 版特權：設定 60 秒，確保長輪詢 (Long Polling) 不會斷線
+// 1. Pro 環境設定：60秒超時 (必要，因為我們要跑兩個 AI 的輪詢)
 export const runtime = "nodejs"; 
 export const maxDuration = 60; 
 
@@ -32,7 +33,10 @@ function mustEnv(name: string) {
   return v;
 }
 
-// 數據處理工具
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// --- 數據處理 (Jitter / Clamp / Confidence) ---
+// 這些數學邏輯維持原樣，用於豐富前端顯示
 function nowId() { return `scan_${Date.now()}`; }
 function clamp(x: number) { return Math.max(0, Math.min(100, Math.round(x))); }
 function hash32(s: string) {
@@ -53,8 +57,7 @@ function confidenceFromSignals(seed: string, primary: number) {
   return Math.round((base + boost) * 100) / 100;
 }
 
-// --- 指標整理 (YouCam -> Coze) ---
-// 將 YouCam 的原始分數轉換為前端卡片需要的格式
+// --- 指標轉換 (YouCam Raw Data -> Coze Input) ---
 function buildMetrics(scoreMap: Map<string, number>, seed: string) {
   // 提取基礎分數 (HD Only)
   const T = clamp(scoreMap.get("hd_texture") || 0);
@@ -70,7 +73,7 @@ function buildMetrics(scoreMap: Map<string, number>, seed: string) {
   const DC = clamp(scoreMap.get("hd_dark_circle") || 0);
   const EB = clamp(scoreMap.get("hd_eye_bag") || 0);
 
-  // 計算衍生指標 (讓數據更豐富)
+  // 衍生數據計算
   const tone = clamp(jitter((RA * 0.6 + (100 - A) * 0.25 + (100 - R) * 0.15), seed, "tone", 2));
   const brightness = clamp(jitter(RA * 0.92, seed, "brightness", 2));
   const clarity = clamp(jitter((RA * 0.55 + (100 - A) * 0.25 + T * 0.20), seed, "clarity", 2));
@@ -85,7 +88,6 @@ function buildMetrics(scoreMap: Map<string, number>, seed: string) {
 
   const conf = (primary: number) => confidenceFromSignals(seed, primary);
 
-  // 定義 14 張卡片的細節
   return [
     { id: "texture", title_en: "TEXTURE MATRIX", title_zh: "紋理結構矩陣", score: T, details: [{ label_en: "Roughness", label_zh: "粗糙度", value: clamp(jitter(100 - T * 0.85, seed, "t:r", 2)) }, { label_en: "Smoothness", label_zh: "平滑度", value: clamp(jitter(T * 0.90, seed, "t:s", 2)) }, { label_en: "Evenness", label_zh: "均勻度", value: clamp(jitter(T * 0.88, seed, "t:e", 3)) }] },
     { id: "pore", title_en: "PORE ARCHITECTURE", title_zh: "毛孔結構指數", score: P, details: [{ label_en: "T-Zone", label_zh: "T 區", value: clamp(jitter(P * 0.85, seed, "p:t", 3)) }, { label_en: "Cheek", label_zh: "臉頰", value: clamp(jitter(P * 1.05, seed, "p:c", 2)) }, { label_en: "Chin", label_zh: "下巴", value: clamp(jitter(P * 0.95, seed, "p:ch", 3)) }] },
@@ -109,24 +111,18 @@ function buildMetrics(scoreMap: Map<string, number>, seed: string) {
   }));
 }
 
-// --- Coze Bot (負責寫未來感文案) ---
-function pickAssistantText(cozeResp: any) {
-  const candidates: any[] = [];
-  if (cozeResp?.data?.messages) candidates.push(...cozeResp.data.messages);
-  if (cozeResp?.messages) candidates.push(...cozeResp.messages);
-  const msg = candidates.find((m: any) => m?.role === "assistant" && typeof m?.content === "string");
-  if (msg?.content) return msg.content;
-  if (typeof cozeResp?.data?.answer === "string") return cozeResp.data.answer;
-  if (typeof cozeResp?.answer === "string") return cozeResp.answer;
-  return "";
-}
+// --- Coze v3 Workflow (Strict Non-Streaming Implementation) ---
+// 根據官方文件：POST Chat -> GET Retrieve (Loop) -> GET Message List
+
+const COZE_BASE = "https://api.coze.com/v3/chat";
 
 async function generateReportWithCoze(metrics: any[], styleSeed: string) {
   const token = mustEnv("COZE_API_TOKEN");
   const botId = mustEnv("COZE_BOT_ID");
-  const baseURL = process.env.COZE_BASE_URL || "https://api.coze.com";
+  // 必須產生一個 user_id，官方建議用來隔離會話
+  const userId = `ht_user_${Math.random().toString(36).slice(2)}`;
 
-  // Prompt Tuned for Future/Medical Tech
+  // Prompt: 注入未來科技感靈魂
   const prompt = `
 [SYSTEM_DIRECTIVE]
 Role: HONEY.TEA Vision Core AI
@@ -161,57 +157,101 @@ Return JSON ONLY. No markdown blocks.
 ${JSON.stringify(metrics)}
 `.trim();
 
-  const r = await fetch(`${baseURL}/v3/chat`, {
-    method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+  // 1. Start Chat (Non-streaming)
+  // 根據官方文件: stream=false 時 auto_save_history 必須為 true
+  console.log("[Coze] Step 1: Starting Chat...");
+  const startRes = await fetch(COZE_BASE, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      bot_id: botId, user_id: "honeytea_report_engine", stream: false, auto_save_history: false,
-      additional_messages: [{ role: "user", content: prompt, content_type: "text", type: "question" }],
-    }),
+      bot_id: botId,
+      user_id: userId,
+      stream: false,
+      auto_save_history: true, // ✅ Required by Coze Docs
+      additional_messages: [
+        { role: "user", content: prompt, content_type: "text" }
+      ]
+    })
   });
+  
+  if (!startRes.ok) throw new Error(`Coze Start Failed: ${startRes.status}`);
+  const startData = await startRes.json();
+  if (startData.code !== 0) throw new Error(`Coze Error: ${JSON.stringify(startData)}`);
+  
+  // 取得關鍵 ID
+  const conversationId = startData.data.conversation_id;
+  const chatId = startData.data.id;
 
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`COZE error: ${r.status}`);
-  const text = pickAssistantText(j);
-  if (!text) throw new Error("COZE empty");
-   
-  const cleaned = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/g, "").trim();
+  // 2. Poll Status (Loop until 'completed')
+  // 根據官方文件: 需要輪詢 retrieve 接口
+  console.log(`[Coze] Step 2: Polling Chat ${chatId}...`);
+  let status = "created";
+  for (let i = 0; i < 20; i++) { // 最多等 40 秒
+    await sleep(2000);
+    const pollRes = await fetch(`${COZE_BASE}/retrieve?conversation_id=${conversationId}&chat_id=${chatId}`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+    const pollData = await pollRes.json();
+    status = pollData.data.status;
+    console.log(`[Coze] Status: ${status}`);
+    
+    if (status === "completed") break;
+    if (status === "failed" || status === "canceled") throw new Error(`Coze Failed: ${status}`);
+  }
+
+  if (status !== "completed") throw new Error("Coze Timeout");
+
+  // 3. Get Messages (List)
+  // 根據官方文件: 完成後調用 list messages 獲取回答
+  console.log("[Coze] Step 3: Fetching Result...");
+  const listRes = await fetch(`${COZE_BASE}/message/list?conversation_id=${conversationId}&chat_id=${chatId}`, {
+    headers: { "Authorization": `Bearer ${token}` }
+  });
+  const listData = await listRes.json();
+  
+  // 找到機器人的回答 (role=assistant, type=answer)
+  const answerMsg = listData.data.find((m: any) => m.role === "assistant" && m.type === "answer");
+  if (!answerMsg) throw new Error("Coze returned no answer");
+
+  const rawText = answerMsg.content;
+  // 清理 JSON 格式 (有些模型會加上 ```json ...)
+  const cleaned = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/g, "").trim();
   return JSON.parse(cleaned);
 }
 
-// --- YouCam 串接 (核心邏輯：Init -> Upload -> Task) ---
-// ✅ 3. 網址修正：乾淨的 URL
-const YOUCAM_BASE = "[https://yce-api-01.makeupar.com/s2s/v2.0](https://yce-api-01.makeupar.com/s2s/v2.0)";
+// --- YouCam Workflow (Strict File Upload Spec) ---
+const YOUCAM_BASE = "https://yce-api-01.makeupar.com/s2s/v2.0";
 
 async function youcamWorkflow(file: File) {
     const apiKey = mustEnv("YOUCAM_API_KEY");
     
-    // 1. [Init] 拿上傳票 (Step 2 in Docs)
-    console.log("[YouCam] Step 1: Init Upload...");
+    // 1. Init (POST /file/skin-analysis)
+    console.log("[YouCam] Step 1: Getting upload URL...");
     const initRes = await fetch(`${YOUCAM_BASE}/file/skin-analysis`, {
         method: "POST", 
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        // 注意：這裡必須傳送 file_size，這是官方文件要求的
         body: JSON.stringify({ files: [{ content_type: file.type, file_name: "scan.jpg", file_size: file.size }] })
     });
     const initData = await initRes.json();
     if (!initRes.ok) throw new Error(`YouCam Init Failed: ${JSON.stringify(initData)}`);
     const { file_id, requests } = initData.data.files[0];
 
-    // 2. [Upload] 上傳到 S3 (Step 4 in Docs)
-    console.log("[YouCam] Step 2: Uploading binary to S3...");
+    // 2. Upload (PUT to S3 with Content-Length)
+    // 官方文件 Step 4: 必須包含 Content-Length
+    console.log("[YouCam] Step 2: Uploading binary...");
     const bytes = await file.arrayBuffer();
     await fetch(requests[0].url, { 
         method: "PUT", 
         headers: { 
             "Content-Type": file.type,
-            "Content-Length": String(file.size) // ✅ 關鍵修正：S3 上傳必須帶 Length
+            "Content-Length": String(file.size) // ✅ Required by Spec
         }, 
         body: bytes 
     });
 
-    // 3. [Start Task] 建立任務 (Step 5 in Docs)
-    console.log("[YouCam] Step 3: Starting AI Task...");
-    // 這裡只列出 HD Actions，避免 "cannot mix HD and SD" 錯誤
+    // 3. Start Task (POST /task/skin-analysis)
+    console.log("[YouCam] Step 3: Starting analysis task...");
+    // 只能傳送 HD 參數，不能混用 SD
     const hdActions = [
         "hd_texture", "hd_pore", "hd_wrinkle", "hd_redness", "hd_oiliness", 
         "hd_age_spot", "hd_radiance", "hd_moisture", "hd_firmness", 
@@ -233,9 +273,9 @@ async function youcamWorkflow(file: File) {
     const taskId = taskData.data.task_id;
     console.log(`[YouCam] Task Started: ${taskId}`);
 
-    // 4. [Poll] 等待結果 (Step 6 in Docs)
+    // 4. Poll (GET /task/skin-analysis/{task_id})
     for (let i = 0; i < 40; i++) {
-        await new Promise(r => setTimeout(r, 1500));
+        await sleep(1500);
         const pollRes = await fetch(`${YOUCAM_BASE}/task/skin-analysis/${taskId}`, { 
             headers: { Authorization: `Bearer ${apiKey}` } 
         });
@@ -267,8 +307,10 @@ export async function POST(req: Request) {
     const file = formData.get("image1") as File;
     if (!file) throw new Error("Missing image1");
 
-    // Execution Flow
+    // 1. YouCam Analysis (File Upload Flow)
     const { map, taskId } = await youcamWorkflow(file);
+    
+    // 2. Metrics & Coze Generation (v3 Chat Flow)
     const scanId = `scan_${Date.now()}`;
     const rawMetrics = buildMetrics(map, scanId);
     const report = await generateReportWithCoze(rawMetrics, scanId);
@@ -285,7 +327,7 @@ export async function POST(req: Request) {
     const msg = e?.message || String(e);
     console.error("Scan error:", msg);
     
-    // 官方錯誤碼映射 (Step 7 Debug Guide)
+    // Spec-based Error Mapping
     let retakeCode = null;
     let tips: string[] = [];
     if (msg.includes("error_src_face_too_small")) { retakeCode = "error_src_face_too_small"; tips = ["Move closer.", "Center face."]; }
