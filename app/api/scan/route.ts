@@ -1,14 +1,13 @@
 // app/api/scan/route.ts
-// HONEY.TEA — MVP Connection Test (Strict YouCam V2 Flow)
-// 🎯 Goal: Verify "Init -> Upload -> Task -> Poll" sequence
-// ⚠️ Coze is DISABLED. We are testing the "Eyes" (YouCam) first.
+// HONEY.TEA — MVP Connection Test (YouCam Only)
+// 🎯 Goal: Verify YouCam v2.0 Connectivity & S3 Upload
+// ⚠️ Coze is DISABLED for this test.
 
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 60; // Pro Tier Timeout
+export const maxDuration = 60;
 
-// 官方 V2 端點
 const YOUCAM_BASE = "https://yce-api-01.makeupar.com/s2s/v2.0";
 
 function mustEnv(name: string) {
@@ -22,19 +21,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function youcamWorkflow(file: File) {
     const apiKey = mustEnv("YOUCAM_API_KEY");
     
-    // --- STEP 1: INIT (掛號) ---
-    // 官方要求：必須先傳 file_size 和 content_type
-    console.log("[YouCam] Step 1: Init (Requesting Upload URL)...");
+    // 1. Init
+    console.log("[Test] 1. Init Upload...");
     const initRes = await fetch(`${YOUCAM_BASE}/file/skin-analysis`, {
         method: "POST", 
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-            files: [{ 
-                content_type: file.type, 
-                file_name: "scan.jpg", 
-                file_size: file.size // ⚠️ 關鍵：沒這個會被拒絕
-            }] 
-        })
+        body: JSON.stringify({ files: [{ content_type: file.type, file_name: "scan.jpg", file_size: file.size }] })
     });
     
     if (!initRes.ok) {
@@ -43,28 +35,25 @@ async function youcamWorkflow(file: File) {
     }
     const initData = await initRes.json();
     const { file_id, requests } = initData.data.files[0];
-    const uploadUrl = requests[0].url; // 這是 S3 的「准考證」
-    console.log("[YouCam] Got File ID:", file_id);
+    console.log("[Test] File ID:", file_id);
 
-    // --- STEP 2: UPLOAD (進場) ---
-    // 官方要求：直接對 uploadUrl 做 PUT，且必須帶 Content-Length
-    console.log("[YouCam] Step 2: Uploading to S3...");
+    // 2. Upload
+    console.log("[Test] 2. Uploading to S3...");
     const bytes = await file.arrayBuffer();
-    const uploadRes = await fetch(uploadUrl, { 
+    const uploadRes = await fetch(requests[0].url, { 
         method: "PUT", 
         headers: { 
             "Content-Type": file.type,
-            "Content-Length": String(file.size) // ⚠️ 企業級規範：S3 強制要求
+            "Content-Length": String(file.size) 
         }, 
         body: bytes 
     });
     
     if (!uploadRes.ok) throw new Error(`S3 Upload Failed: ${uploadRes.status}`);
-    console.log("[YouCam] Upload Success");
+    console.log("[Test] Upload Success");
 
-    // --- STEP 3: TASK (考試) ---
-    // 官方要求：指定 src_file_id 和 dst_actions (HD Only)
-    console.log("[YouCam] Step 3: Starting Analysis Task...");
+    // 3. Task
+    console.log("[Test] 3. Starting Task...");
     const hdActions = [
         "hd_texture", "hd_pore", "hd_wrinkle", "hd_redness", "hd_oiliness", 
         "hd_age_spot", "hd_radiance", "hd_moisture", "hd_firmness", 
@@ -88,24 +77,23 @@ async function youcamWorkflow(file: File) {
     }
     const taskData = await taskRes.json();
     const taskId = taskData.data.task_id;
-    console.log("[YouCam] Task Started. ID:", taskId);
+    console.log("[Test] Task ID:", taskId);
 
-    // --- STEP 4: POLL (查榜) ---
-    // 官方要求：輪詢直到 status='success'
-    console.log("[YouCam] Step 4: Polling for Results...");
+    // 4. Poll
+    console.log("[Test] 4. Polling...");
     for (let i = 0; i < 40; i++) {
-        await sleep(1500); // 等 1.5 秒
+        await sleep(1500);
         const pollRes = await fetch(`${YOUCAM_BASE}/task/skin-analysis/${taskId}`, { 
             headers: { Authorization: `Bearer ${apiKey}` } 
         });
         const pollData = await pollRes.json();
         const status = pollData?.data?.task_status;
-        console.log(`[YouCam] Poll ${i}: ${status}`);
+        console.log(`[Test] Poll ${i}: ${status}`);
 
         if (status === "success") {
-            return pollData.data.results.output; // ✅ 拿到數據了！
+            return pollData.data.results.output; // 直接回傳原始數據陣列
         }
-        if (status === "error") throw new Error(`YouCam Analysis Error: ${JSON.stringify(pollData)}`);
+        if (status === "error") throw new Error(`YouCam Error: ${JSON.stringify(pollData)}`);
     }
     throw new Error("YouCam Timeout");
 }
@@ -123,10 +111,10 @@ export async function POST(req: Request) {
         const file = formData.get("image1") as File;
         if (!file) throw new Error("No image");
 
-        // 執行官方流程
+        // 只跑 YouCam，不跑 Coze
         const rawOutput = await youcamWorkflow(file);
 
-        // 回傳原始數據給前端 Alert
+        // 回傳原始數據，證明連線成功
         return NextResponse.json({
             status: "success",
             message: "YouCam Connection Verified",
