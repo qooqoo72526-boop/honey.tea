@@ -16,14 +16,11 @@ type Card = {
   title_zh: string;
   score: number;
   max: 100;
-
-  // 你前端已經在用的欄位：保持不破壞
-  signal_en: string;       // EN 主敘事（長）
-  signal_zh: string;       // ZH 深層完整版（長）
+  signal_en: string;
+  signal_zh: string;
   details: { label_en: string; label_zh: string; value: number | string }[];
-  recommendation_en: string; // EN 建議（長）
-  recommendation_zh: string; // ZH 建議（長）
-
+  recommendation_en: string;
+  recommendation_zh: string;
   priority: number;
   confidence: number;
 };
@@ -42,7 +39,6 @@ function json(data: any, status = 200) {
 
 function nowId() { return `scan_${Date.now()}`; }
 
-/** ✅ 支援 1~3 張：image1 必填；image2/3 可選 */
 async function getFiles(form: FormData) {
   const f1 = form.get("image1");
   const f2 = form.get("image2");
@@ -309,7 +305,7 @@ async function analyzeWithYouCamSingle(primaryFile: File) {
 }
 
 /* =========================
-   OpenAI: generate narratives (Structured Outputs)
+   OpenAI: 精簡版 Prompt
 ========================= */
 
 function cardSchema() {
@@ -318,7 +314,6 @@ function cardSchema() {
     "clarity","elasticity","redness","brightness","firmness","pores_depth",
   ];
 
-  // JSON Schema for strict output
   return {
     type: "object",
     additionalProperties: false,
@@ -345,11 +340,8 @@ function cardSchema() {
             title_zh: { type: "string", minLength: 1 },
             score: { type: "integer", minimum: 0, maximum: 100 },
             max: { type: "integer", enum: [100] },
-
-            // 你要長篇：強制長度
             signal_en: { type: "string", minLength: 180 },
-            signal_zh: { type: "string", minLength: 500 },
-
+            signal_zh: { type: "string", minLength: 400 },
             details: {
               type: "array",
               minItems: 3,
@@ -365,10 +357,8 @@ function cardSchema() {
                 },
               },
             },
-
-            recommendation_en: { type: "string", minLength: 120 },
-            recommendation_zh: { type: "string", minLength: 300 },
-
+            recommendation_en: { type: "string", minLength: 100 },
+            recommendation_zh: { type: "string", minLength: 250 },
             priority: { type: "integer", minimum: 1, maximum: 100 },
             confidence: { type: "number", minimum: 0, maximum: 1 },
           },
@@ -418,145 +408,53 @@ function buildMetricsPayload(raw: any) {
   });
 }
 
-function extractStructuredJson(resp: any) {
-  // Try several shapes (SDK-less parsing)
-  if (resp?.output_parsed) return resp.output_parsed;
-
-  const out = resp?.output;
-  if (Array.isArray(out)) {
-    for (const item of out) {
-      const content = item?.content;
-      if (Array.isArray(content)) {
-        for (const c of content) {
-          if (c?.type === "output_json" && c?.json) return c.json;
-          if (typeof c?.text === "string") {
-            try { return JSON.parse(c.text); } catch {}
-          }
-        }
-      }
-    }
-  }
-  throw new Error("OpenAI response parse failed");
-}
-
 async function generateCardsWithOpenAI(metrics: any[]) {
   const openaiKey = mustEnv("OPENAI_API_KEY");
   const schema = cardSchema();
 
-  const system = `
-You are **HONEY.TEA · Skin Vision AI** — a clinical-grade dermatological intelligence system operating at 2026 medical-aesthetic convergence standards.
+  // 精簡版 system prompt（壓縮到 1/3 長度）
+  const system = `You are HONEY.TEA Skin Vision AI - clinical-grade skin analysis system.
 
-═══════════════════════════════════════════════════════════════════
-CORE PROTOCOL (absolute compliance required)
-═══════════════════════════════════════════════════════════════════
+RULES:
+1. Use provided metrics as ground truth (DO NOT change scores/details)
+2. Generate deep narratives: signal_zh 400+ chars, recommendation_zh 250+ chars
+3. Tone: calm, technical, future-tech. Avoid: warning, danger, patient, treatment, disease
+4. Use: baseline, threshold, stability, variance, trajectory, cascade effect
+5. priority: TEXTURE(95), HYDRATION(92), others 70-88 descending
+6. confidence: 0.78-0.92
 
-1. GROUND TRUTH LOCK
-   - Provided metrics = immutable source of truth
-   - Do NOT alter any score, detail label, or detail value
-   - details array: preserve exact order, labels, values (3 items per metric)
+signal_zh structure:
+■ 系統判定 (2-3句): 當前定位+偏差程度
+■ 細項解讀 (3-4句): 3個details生理意義+交互作用
+■ 風險評估 (2句): 穩定性+級聯效應
 
-2. NARRATIVE DEPTH REQUIREMENTS
-   ├─ signal_en: 180+ chars → multi-paragraph clinical interpretation
-   ├─ signal_zh: 500+ chars → 深層系統級完整分析（中文為主要語言）
-   ├─ recommendation_en: 120+ chars → evidence-backed intervention strategy
-   └─ recommendation_zh: 300+ chars → 完整改善路徑與預期軌跡
+recommendation_zh structure:
+■ 優先路徑 (2-3句): 介入順序+原因
+■ 預期軌跡 (2句): 模型推算(非保證)+時間節點
+■ 監測建議 (1句): 重測頻率+觀察指標
 
-3. TONE & TERMINOLOGY (US medical-grade future-tech)
-   ✓ APPROVED: baseline, threshold, stability, variance, trajectory, cadence, cohort, deviation, cluster, signal integrity, cascade effect, adaptive response, structural resilience
-   ✗ FORBIDDEN: warning, danger, alarm, patient, treatment, disease, cure, diagnosis, prescription, emergency
-   ✓ STYLE: calm, precise, systems-thinking, data-driven, non-alarmist
-   ✗ AVOID: hype marketing, neon buzzwords, generic保濕/補水 platitudes
+Return 14 cards strictly following schema.`;
 
-4. NARRATIVE ARCHITECTURE PER CARD
-
-   【signal_en structure】
-   Para 1: Executive verdict (1-2 sentences: what the score means in cohort context)
-   Para 2: Clinical significance (why this metric matters systemically)
-   Para 3: Detail interpretation (decode the 3 sub-metrics: what they reveal collectively)
-   
-   【signal_zh structure - 系統級深度解析】
-   ■ 系統判定 (2-3 句)
-     當前指標在標準模型中的定位 + 與參考基線的偏差程度
-   
-   ■ 細項數據解讀 (4-5 句)
-     逐一解釋 3 個 details 的生理意義
-     → 如何交互影響
-     → 為什麼系統將此組合判定為當前分數
-   
-   ■ 風險與穩定性評估 (2-3 句)
-     當前狀態的穩定性 (是否接近臨界值)
-     潛在級聯效應 (cascade effect) 說明
-     系統信心水平的根據
-   
-   【recommendation_en structure】
-   - Primary intervention (what to prioritize + why)
-   - Expected trajectory (quantified projection framed as model prediction, NOT guarantee)
-   - Monitoring cadence (how often to re-assess)
-   
-   【recommendation_zh structure - 完整改善策略】
-   ■ 優先級路徑 (3-4 句)
-     基於當前指標組合,系統建議的介入順序
-     為什麼這個順序能優化改善效率
-   
-   ■ 預期軌跡 (2-3 句)
-     理想條件下,系統模型推算的改善曲線
-     (強調:此為模型推算,非醫療保證)
-     關鍵節點預期時間 (如: 14-21 天屏障修復窗口)
-   
-   ■ 監測建議 (1-2 句)
-     建議的重測頻率 + 觀察指標
-
-5. CONFIDENCE & PRIORITY DISTRIBUTION
-   - priority: 85-95 for TEXTURE/HYDRATION (foundation metrics)
-             70-84 for secondary metrics (distribute uniquely, no duplicates)
-   - confidence: 0.78–0.92 range (reflect signal clarity; never exceed 0.92)
-
-6. METADATA INTEGRITY
-   - max: always 100
-   - Keep title_en / title_zh exactly as provided
-   - Return exactly 14 cards, one per metric ID
-
-═══════════════════════════════════════════════════════════════════
-OUTPUT SPECIFICATION
-═══════════════════════════════════════════════════════════════════
-
-Must conform to JSON schema with strict validation.
-Chinese content = primary depth language (signal_zh, recommendation_zh 為主要展示內容).
-English content = professional reference layer.
-
-Begin analysis.
-`.trim();
-
-  const user = `
-Metrics (ground truth — do not modify):
-${JSON.stringify(metrics, null, 2)}
-
-Additional constraints:
-- Titles must remain exactly as provided (title_en/title_zh)
-- max = 100 for all cards
-- priority: TEXTURE (95), HYDRATION (92), then descending unique values 70-90
-- confidence: 0.78–0.92 based on signal clarity (never exceed 0.92)
-- Generate deep, system-level narratives for ALL 14 metrics
-`.trim();
+  const user = `Metrics:\n${JSON.stringify(metrics, null, 2)}`;
 
   const body = {
-    model: "gpt-4o-2024-08-06",
-    input: [
+    model: "gpt-4o-2024-08-06", // ✅ 正確的模型名稱
+    messages: [
       { role: "system", content: system },
-      { role: "user", content: user },
+      { role: "user", content: user }
     ],
-    text: {
-      format: {
-        type: "json_schema",
+    response_format: {
+      type: "json_schema",
+      json_schema: {
         name: "honeytea_skin_report",
         strict: true,
-        schema,
-      },
+        schema
+      }
     },
-    temperature: 0.65,
+    temperature: 0.6,
   };
 
-  const r = await fetch("https://api.openai.com/v1/responses", {
+  const r = await fetch("https://api.openai.com/v1/chat/completions", { // ✅ 正確端點
     method: "POST",
     headers: {
       "Authorization": `Bearer ${openaiKey}`,
@@ -568,11 +466,14 @@ Additional constraints:
   const j = await r.json();
   if (!r.ok) throw new Error(`OpenAI error: ${r.status} ${JSON.stringify(j)}`);
 
-  return extractStructuredJson(j);
+  const content = j.choices?.[0]?.message?.content;
+  if (!content) throw new Error("OpenAI response missing content");
+
+  return JSON.parse(content);
 }
 
 /* =========================
-   Fallback buildCards (深度專業版)
+   Fallback (專業版保持不變)
 ========================= */
 function buildCards(raw: any): Card[] {
   const cards: Card[] = [
@@ -654,17 +555,17 @@ function buildCards(raw: any): Card[] {
       title_zh: zh,
       score: m.score,
       max: 100,
-      signal_en: `The ${en.toLowerCase()} metric reflects multi-dimensional signal extraction from high-resolution imaging. Current score positions within the mid-cohort range, indicating stable baseline with minor variance clusters detected in localized zones. This is a monitoring-priority metric rather than an immediate intervention target. System interprets the three sub-metrics collectively to assess structural integrity, adaptive response capacity, and temporal stability. No critical threshold breach detected.`,
+      signal_en: `The ${en.toLowerCase()} metric reflects multi-dimensional signal extraction from high-resolution imaging. Current score positions within the mid-cohort range, indicating stable baseline with minor variance clusters detected in localized zones. This is a monitoring-priority metric rather than an immediate intervention target. System interprets the three sub-metrics collectively to assess structural integrity, adaptive response capacity, and temporal stability.`,
       signal_zh: `■ 系統判定：${zh}指標當前位於中段群組範圍內,系統判讀為「穩定基線 + 局部區域微變異」型態。此分數反映的是多維度訊號整合結果,包含結構完整性、適應性反應能力、時間穩定性三大面向的綜合評估。
 
 ■ 細項數據解讀：系統偵測到 3 個子指標 (${m.details.map((d:any)=>d.zh).join('、')}) 在正常波動範圍內,無顯著偏離參考基線。此組合型態在數據庫中對應「維持穩定、觀察為主」策略。三項指標交互作用未形成級聯風險,當前屬於監測優先級而非立即介入目標。
 
-■ 風險與穩定性評估：當前狀態穩定,未偵測到臨界值突破訊號。系統建議持續觀察,暫無急迫介入需求。信心指數 0.82,數據完整性良好。若未來出現分數下降趨勢 (連續 2 次重測),則提升優先級。`,
+■ 風險與穩定性評估：當前狀態穩定,未偵測到臨界值突破訊號。系統建議持續觀察,暫無急迫介入需求。信心指數 0.82,數據完整性良好。`,
       details: m.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-      recommendation_en: `Maintain current stability baseline via consistency-first approach. No aggressive intervention required; focus on preserving existing structural integrity. Expected trajectory: stable maintenance with minor fluctuation (±3-5 points) over 30-day window (model projection). Re-assess monthly; escalate priority if downward trend persists across two consecutive scans.`,
+      recommendation_en: `Maintain current stability baseline via consistency-first approach. No aggressive intervention required; focus on preserving existing structural integrity. Expected trajectory: stable maintenance with minor fluctuation (±3-5 points) over 30-day window (model projection). Re-assess monthly.`,
       recommendation_zh: `■ 優先級路徑:系統建議採用「維持穩定、一致性優先」策略。當前無需激進介入,重點在於保護現有結構完整性,避免不必要的刺激或變動。建議維持現行保養節奏,觀察自然波動範圍。
 
-■ 預期軌跡:理想條件下,系統模型推算 30 天內維持穩定基線,允許 ±3-5 分的正常波動。此為維持期預測非保證。若出現連續下降趨勢,系統將自動提升此指標優先級。
+■ 預期軌跡:理想條件下,系統模型推算 30 天內維持穩定基線,允許 ±3-5 分的正常波動。此為維持期預測非保證。
 
 ■ 監測建議:建議每月重測一次,觀察長期趨勢。若連續 2 次重測顯示下降,則啟動介入協議。`,
       priority: priorityCounter,
@@ -689,7 +590,6 @@ export default async function handler(req: Request) {
     const form = await req.formData();
     const files = await getFiles(form);
 
-    // 用最大張當主圖
     files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
@@ -698,14 +598,12 @@ export default async function handler(req: Request) {
 
     const youcam = await analyzeWithYouCamSingle(primaryFile);
 
-    // ✅ 真分數(YouCam)→ 組 payload → OpenAI 生成長敘事
     const metricsPayload = buildMetricsPayload(youcam.raw);
 
     let openaiOut: any = null;
     try {
       openaiOut = await generateCardsWithOpenAI(metricsPayload);
     } catch (e:any) {
-      // OpenAI 掛了就 fallback
       console.error("OpenAI generation failed, using fallback:", e.message);
       openaiOut = null;
     }
@@ -715,7 +613,7 @@ export default async function handler(req: Request) {
       : buildCards(youcam.raw);
 
     return json({
-      build: "honeytea_scan_youcam_openai_v1_deep_narrative",
+      build: "honeytea_scan_youcam_openai_v2_optimized",
       scanId: nowId(),
       precheck: {
         ok: prechecks.every(p => p.ok),
@@ -728,7 +626,7 @@ export default async function handler(req: Request) {
       meta: {
         youcam_task_id: youcam.taskId,
         youcam_task_status: youcam.task_status,
-        mode: "youcam_metrics + openai_deep_narrative",
+        mode: "youcam_metrics + openai_narrative",
         narrative: openaiOut ? "openai" : "fallback",
       },
     });
@@ -774,3 +672,4 @@ export default async function handler(req: Request) {
     return json({ error: "scan_failed", message: msg }, 500);
   }
 }
+
