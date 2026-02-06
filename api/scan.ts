@@ -41,10 +41,18 @@ function nowId() {
   try { return `scan_${crypto.randomUUID()}`; } catch { return `scan_${Date.now()}`; }
 }
 
+/**
+ * ✅ Edge-safe env getter
+ * Fixes TS2580 ("process" not found) without @types/node
+ */
 function mustEnv(name: string) {
-  const v = (process as any)?.env?.[name];
+  const v =
+    (globalThis as any)?.process?.env?.[name] ??
+    (globalThis as any)?.Deno?.env?.get?.(name) ??
+    undefined;
+
   if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+  return String(v);
 }
 
 async function getFiles(form: FormData) {
@@ -82,7 +90,7 @@ function quickPrecheck(bytes: Uint8Array) {
 
   tips.push("Keep white balance neutral. Avoid warm indoor bulbs when possible.");
 
-  return { ok: warnings.length === 0, warnings, tips, avgSignal: avg };
+  return { ok: warnings.length === 0, warnings, tips, avgSignal: avg, sizeKB };
 }
 
 /* =========================
@@ -105,6 +113,31 @@ const YOUCAM_HD_ACTIONS = [
   "hd_moisture","hd_dark_circle","hd_eye_bag","hd_droopy_upper_eyelid","hd_droopy_lower_eyelid",
   "hd_firmness","hd_acne",
 ];
+
+/**
+ * ✅ Defensive guard for YouCam min image size
+ * We can’t reliably read pixel dimensions in Edge without extra libs,
+ * so we use a file-size proxy to avoid YouCam "below_min_image_size".
+ */
+function ensureMinFileSize(file: File) {
+  const kb = file.size / 1024;
+  // 保守門檻：避免 YouCam 退件（你之前的錯誤碼）
+  // 若你仍遇到退件，請把門檻往上調（例如 220KB / 300KB）
+  const MIN_KB = 160;
+
+  if (kb < MIN_KB) {
+    return {
+      ok: false,
+      tips: [
+        "照片解析度偏低：請用原相機拍攝，避免截圖/社群轉存。",
+        "請靠近一點：臉部寬度約佔畫面 60–80%。",
+        "確保光線均勻（面向窗戶），避免背光。",
+        "拍攝後不要再用通訊軟體壓縮轉傳，直接上傳原檔。",
+      ],
+    };
+  }
+  return { ok: true, tips: [] as string[] };
+}
 
 async function youcamInitUpload(file: File) {
   const apiKey = mustEnv("YOUCAM_API_KEY");
@@ -136,7 +169,6 @@ async function youcamInitUpload(file: File) {
 }
 
 async function youcamPutBinary(putUrl: string, fileBytes: Uint8Array, contentType: string) {
-  // ✅ Edge 禁止手動塞 Content-Length：移除
   const to = withTimeout(25000);
   const r = await fetch(putUrl, {
     method: "PUT",
@@ -259,6 +291,10 @@ function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number }>) 
     pores_depth: { score: clampScore(P.raw), details: [{en:"Depth Proxy",zh:"深度代理值",v:"Derived"},{en:"Edge Definition",zh:"邊界清晰度",v:"Good"},{en:"Stability",zh:"穩定度",v:"High"}] },
   };
 }
+
+/* =========================
+   OpenAI Structured Outputs
+   ========================= */
 
 function cardSchema() {
   const metricEnum: MetricId[] = [
@@ -441,21 +477,33 @@ function buildCardsFallback(raw: any): Card[] {
   });
 }
 
+/* =========================
+   Handler
+   ========================= */
+
 export default async function handler(req: Request) {
   let stage = "start";
   try {
     if (req.method === "OPTIONS") return json({}, 200);
     if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-    stage = "formdata";
     const form = await req.formData();
-    stage = "getFiles";
     const files = await getFiles(form);
 
-    files.sort((a,b)=> b.size - a.size);
+    files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
-    stage = "precheck";
+    // ✅ 先用 file.size 擋掉 YouCam below_min_image_size
+    const minCheck = ensureMinFileSize(primaryFile);
+    if (!minCheck.ok) {
+      return json({
+        error: "scan_retake",
+        code: "below_min_image_size",
+        tips: minCheck.tips,
+      }, 200);
+    }
+
+    // quick precheck（亮度/粗略壓縮）
     const bytesAll = await Promise.all(files.map(toBytes));
     const pre = bytesAll.map(quickPrecheck);
     if (!pre.every(p => p.ok)) {
@@ -491,7 +539,7 @@ export default async function handler(req: Request) {
     const cards: Card[] = openaiOut?.cards ? openaiOut.cards : buildCardsFallback(raw);
 
     return json({
-      build: "honeytea_scan_youcam_openai_v4",
+      build: "honeytea_scan_youcam_openai_edge_fixed_v1",
       scanId: nowId(),
       summary_en: openaiOut?.summary_en ?? "Skin analysis complete. Signals generated.",
       summary_zh: openaiOut?.summary_zh ?? "皮膚分析完成，已生成訊號。",
@@ -504,7 +552,7 @@ export default async function handler(req: Request) {
       },
     });
 
-  } catch (e:any) {
+  } catch (e: any) {
     return json({ error: "scan_failed", stage, message: e?.message ?? String(e) }, 500);
   }
 }
