@@ -41,10 +41,7 @@ function nowId() {
   try { return `scan_${crypto.randomUUID()}`; } catch { return `scan_${Date.now()}`; }
 }
 
-/**
- * ✅ Edge-safe env getter
- * Fixes TS2580 ("process" not found) without @types/node
- */
+// ✅ Edge-safe env getter: fixes TS2580 without @types/node
 function mustEnv(name: string) {
   const v =
     (globalThis as any)?.process?.env?.[name] ??
@@ -76,7 +73,7 @@ function quickPrecheck(bytes: Uint8Array) {
   const warnings: string[] = [];
   const tips: string[] = [];
 
-  if (sizeKB < 60) {
+  if (sizeKB < 80) {
     warnings.push("LOW_RESOLUTION");
     tips.push("Image looks compressed. Use a clearer photo (avoid screenshots).");
   }
@@ -91,6 +88,24 @@ function quickPrecheck(bytes: Uint8Array) {
   tips.push("Keep white balance neutral. Avoid warm indoor bulbs when possible.");
 
   return { ok: warnings.length === 0, warnings, tips, avgSignal: avg, sizeKB };
+}
+
+// ✅ Hard guard (pre-YouCam). If too small -> retake (NO CHARGE)
+function ensureMinFileSize(file: File) {
+  const kb = file.size / 1024;
+  const MIN_KB = 180; // 若仍被退件，可調到 220~300
+
+  if (kb < MIN_KB) {
+    return {
+      ok: false,
+      tips: [
+        "照片解析度偏低：請用原相機拍攝，避免截圖/社群轉存。",
+        "臉部寬度建議佔畫面 60–80%，不要太遠。",
+        "拍完不要經過通訊軟體壓縮，直接上傳原檔。",
+      ],
+    };
+  }
+  return { ok: true, tips: [] as string[] };
 }
 
 /* =========================
@@ -114,34 +129,8 @@ const YOUCAM_HD_ACTIONS = [
   "hd_firmness","hd_acne",
 ];
 
-/**
- * ✅ Defensive guard for YouCam min image size
- * We can’t reliably read pixel dimensions in Edge without extra libs,
- * so we use a file-size proxy to avoid YouCam "below_min_image_size".
- */
-function ensureMinFileSize(file: File) {
-  const kb = file.size / 1024;
-  // 保守門檻：避免 YouCam 退件（你之前的錯誤碼）
-  // 若你仍遇到退件，請把門檻往上調（例如 220KB / 300KB）
-  const MIN_KB = 160;
-
-  if (kb < MIN_KB) {
-    return {
-      ok: false,
-      tips: [
-        "照片解析度偏低：請用原相機拍攝，避免截圖/社群轉存。",
-        "請靠近一點：臉部寬度約佔畫面 60–80%。",
-        "確保光線均勻（面向窗戶），避免背光。",
-        "拍攝後不要再用通訊軟體壓縮轉傳，直接上傳原檔。",
-      ],
-    };
-  }
-  return { ok: true, tips: [] as string[] };
-}
-
 async function youcamInitUpload(file: File) {
   const apiKey = mustEnv("YOUCAM_API_KEY");
-
   const payload = {
     files: [{
       content_type: file.type || "image/jpeg",
@@ -248,7 +237,6 @@ function clampScore(x: any) {
 function extractYoucamScores(j: any) {
   const out = j?.data?.results?.output;
   const map = new Map<string, { ui: number; raw: number }>();
-
   if (Array.isArray(out)) {
     for (const x of out) {
       map.set(String(x.type), {
@@ -293,7 +281,7 @@ function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number }>) 
 }
 
 /* =========================
-   OpenAI Structured Outputs
+   OpenAI narrative (unchanged)
    ========================= */
 
 function cardSchema() {
@@ -366,7 +354,6 @@ function buildMetricsPayload(raw: any) {
     clarity:["CLARITY","表層清晰度"], elasticity:["ELASTICITY","彈性回彈"], redness:["REDNESS","泛紅強度"], brightness:["BRIGHTNESS","亮度狀態"],
     firmness:["FIRMNESS","緊緻支撐"], pores_depth:["PORE DEPTH","毛孔深度感"],
   };
-
   return order.map((id) => {
     const m = raw[id];
     const [en,zh] = baseTitle[id];
@@ -477,33 +464,33 @@ function buildCardsFallback(raw: any): Card[] {
   });
 }
 
-/* =========================
-   Handler
-   ========================= */
-
 export default async function handler(req: Request) {
   let stage = "start";
   try {
-    if (req.method === "OPTIONS") return json({}, 200);
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+    if (req.method === "OPTIONS") return json({ meta: { stage: "options" } }, 200);
+    if (req.method !== "POST") return json({ error: "Method not allowed", meta: { stage: "method" } }, 405);
 
+    stage = "formdata";
     const form = await req.formData();
+    stage = "getFiles";
     const files = await getFiles(form);
 
     files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
-    // ✅ 先用 file.size 擋掉 YouCam below_min_image_size
+    // ✅ If too small => retake (NO YouCam charge)
+    stage = "min_file_size";
     const minCheck = ensureMinFileSize(primaryFile);
     if (!minCheck.ok) {
       return json({
         error: "scan_retake",
         code: "below_min_image_size",
         tips: minCheck.tips,
+        meta: { stage },
       }, 200);
     }
 
-    // quick precheck（亮度/粗略壓縮）
+    stage = "precheck";
     const bytesAll = await Promise.all(files.map(toBytes));
     const pre = bytesAll.map(quickPrecheck);
     if (!pre.every(p => p.ok)) {
@@ -511,9 +498,11 @@ export default async function handler(req: Request) {
         error: "scan_retake",
         code: "precheck_failed",
         tips: Array.from(new Set(pre.flatMap(p => p.tips))).slice(0, 8),
+        meta: { stage },
       }, 200);
     }
 
+    // ✅ YouCam charge usually starts when task is created / processed
     stage = "youcam_file_init";
     const init = await youcamInitUpload(primaryFile);
 
@@ -539,7 +528,7 @@ export default async function handler(req: Request) {
     const cards: Card[] = openaiOut?.cards ? openaiOut.cards : buildCardsFallback(raw);
 
     return json({
-      build: "honeytea_scan_youcam_openai_edge_fixed_v1",
+      build: "honeytea_scan_youcam_openai_edge_fixed_v2",
       scanId: nowId(),
       summary_en: openaiOut?.summary_en ?? "Skin analysis complete. Signals generated.",
       summary_zh: openaiOut?.summary_zh ?? "皮膚分析完成，已生成訊號。",
@@ -553,6 +542,50 @@ export default async function handler(req: Request) {
     });
 
   } catch (e: any) {
-    return json({ error: "scan_failed", stage, message: e?.message ?? String(e) }, 500);
+    const msg = e?.message ?? String(e);
+
+    // ✅ Map common YouCam retake errors to 200 retake (no confusing hard error on UI)
+    if (msg.includes("error_src_face_out_of_bound")) {
+      return json({
+        error: "scan_retake",
+        code: "error_src_face_out_of_bound",
+        tips: [
+          "臉部超出範圍：請把臉放回畫面中心。",
+          "臉部寬度建議佔畫面 60–80%。",
+          "保持頭部穩定，避免左右大幅移動。",
+          "避免瀏海/手遮擋額頭與眼周。",
+        ],
+        meta: { stage, raw: msg },
+      }, 200);
+    }
+
+    if (msg.includes("error_src_face_too_small")) {
+      return json({
+        error: "scan_retake",
+        code: "error_src_face_too_small",
+        tips: [
+          "鏡頭再靠近一點：臉部寬度需佔畫面 60–80%。",
+          "臉置中、正面直視，避免低頭/側臉。",
+          "額頭露出（瀏海撥開），避免眼鏡遮擋。",
+          "光線均勻：面向窗戶或柔光補光，避免背光。",
+        ],
+        meta: { stage, raw: msg },
+      }, 200);
+    }
+
+    if (msg.includes("error_lighting_dark")) {
+      return json({
+        error: "scan_retake",
+        code: "error_lighting_dark",
+        tips: [
+          "光線不足：請面向窗戶或補光燈，避免背光。",
+          "確保臉部明亮均勻，不要只有額頭亮或鼻翼反光。",
+        ],
+        meta: { stage, raw: msg },
+      }, 200);
+    }
+
+    // default hard error
+    return json({ error: "scan_failed", stage, message: msg }, 500);
   }
 }
