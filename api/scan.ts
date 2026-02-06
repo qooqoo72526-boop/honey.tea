@@ -75,7 +75,6 @@ function quickPrecheck(bytes: Uint8Array) {
   if (avg > 185) { warnings.push("TOO_BRIGHT"); tips.push("Highlights are strong. Avoid direct overhead light."); }
 
   tips.push("Keep white balance neutral. Avoid warm indoor bulbs when possible.");
-
   return { ok: warnings.length === 0, avgSignal: avg, warnings, tips };
 }
 
@@ -300,14 +299,67 @@ async function analyzeWithYouCamSingle(primaryFile: File) {
 
   const scoreMap = extractYoucamScores(finalJson);
   const raw = mapYoucamToYourRaw(scoreMap);
-
   return { taskId, task_status: finalJson?.data?.task_status, raw };
 }
 
 /* =========================
-   OpenAI: 精簡版 Prompt
+   Growth — V2: diminishing returns + better drag label
 ========================= */
+function growthParams(id: MetricId) {
+  if (id === "hydration" || id === "clarity" || id === "texture" || id === "brightness") return { k: 0.78, band: "快回應" };
+  if (id === "sebum" || id === "sensitivity" || id === "redness" || id === "skintone") return { k: 0.60, band: "中回應" };
+  return { k: 0.32, band: "慢回應" };
+}
 
+function growthRange(id: MetricId, score: number, confidence: number) {
+  const baseSpace = Math.max(0, 100 - Math.round(score));
+
+  // 邊際效益遞減：越高分越難進步（更像真的生理）
+  const difficultyFactor = score > 85 ? 0.40 : score > 70 ? 0.70 : 0.90;
+
+  const { k, band } = growthParams(id);
+  const conf = Math.max(0, Math.min(1, confidence ?? 0.80));
+
+  const rawResistance = conf < 0.6 ? 0.20 : conf < 0.75 ? 0.12 : 0.05;
+  const resistanceVal = rawResistance + (1 - difficultyFactor) * 0.10;
+
+  const recover = Math.max(0, Math.min(38, Math.round(baseSpace * k * difficultyFactor)));
+
+  const lo = Math.max(0, Math.round(recover * 0.80));
+  const hi = Math.max(lo + 3, Math.round(recover * 1.15));
+
+  const drag =
+    resistanceVal >= 0.15 ? "高（結構慣性）" :
+    resistanceVal >= 0.08 ? "中（生理週期）" :
+    "低（快速反應）";
+
+  return { lo, hi, drag, band };
+}
+
+function appendGrowthToRecommendation(card: Card) {
+  const zh = (card.recommendation_zh || "").trim();
+  const en = (card.recommendation_en || "").trim();
+
+  // 防重：OpenAI 已寫過成長/回收/窗口就不再加
+  const zhHas = /成長空間|可回收|回收窗口|Recovery|Growth/i.test(zh);
+  const enHas = /growth potential|recovery window|recoverable/i.test(en);
+
+  const g = growthRange(card.id, card.score, card.confidence);
+  const lineZh = `■ 成長空間：可回收 ${g.lo}–${g.hi}%（阻力：${g.drag}｜${g.band}）`;
+  const lineEn = `Growth Potential: ${g.lo}-${g.hi}% (Drag: ${g.drag})`;
+
+  if (!zhHas) card.recommendation_zh = (zh ? `${zh}\n${lineZh}` : lineZh);
+  if (!enHas) card.recommendation_en = (en ? `${en}\n${lineEn}` : lineEn);
+
+  // 保底裁切：避免手機/前端背面爆
+  card.signal_zh = (card.signal_zh || "").slice(0, 1200);
+  card.recommendation_zh = (card.recommendation_zh || "").slice(0, 650);
+  return card;
+}
+
+/* =========================
+   OpenAI schema + prompt (HUD minimalism)
+========================= */
 function cardSchema() {
   const metricEnum: MetricId[] = [
     "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
@@ -340,8 +392,8 @@ function cardSchema() {
             title_zh: { type: "string", minLength: 1 },
             score: { type: "integer", minimum: 0, maximum: 100 },
             max: { type: "integer", enum: [100] },
-            signal_en: { type: "string", minLength: 180 },
-            signal_zh: { type: "string", minLength: 400 },
+            signal_en: { type: "string", minLength: 120 },
+            signal_zh: { type: "string", minLength: 280 },
             details: {
               type: "array",
               minItems: 3,
@@ -357,8 +409,8 @@ function cardSchema() {
                 },
               },
             },
-            recommendation_en: { type: "string", minLength: 100 },
-            recommendation_zh: { type: "string", minLength: 250 },
+            recommendation_en: { type: "string", minLength: 60 },
+            recommendation_zh: { type: "string", minLength: 140 },
             priority: { type: "integer", minimum: 1, maximum: 100 },
             confidence: { type: "number", minimum: 0, maximum: 1 },
           },
@@ -412,33 +464,34 @@ async function generateCardsWithOpenAI(metrics: any[]) {
   const openaiKey = mustEnv("OPENAI_API_KEY");
   const schema = cardSchema();
 
-  // 精簡版 system prompt（壓縮到 1/3 長度）
-  const system = `You are HONEY.TEA Skin Vision AI - clinical-grade skin analysis system.
+  const system = `You are HONEY.TEA Skin Vision — premium future-tech analysis (NOT medical, NOT marketing).
 
-RULES:
-1. Use provided metrics as ground truth (DO NOT change scores/details)
-2. Generate deep narratives: signal_zh 400+ chars, recommendation_zh 250+ chars
-3. Tone: calm, technical, future-tech. Avoid: warning, danger, patient, treatment, disease
-4. Use: baseline, threshold, stability, variance, trajectory, cascade effect
-5. priority: TEXTURE(95), HYDRATION(92), others 70-88 descending
-6. confidence: 0.78-0.92
+Rules:
+- DO NOT change scores/details.
+- Chinese must be "Analytical Minimalism": short, dense, calm.
+- Avoid: 病人/疾病/治療/危險/恐嚇/醫療保證.
+- Avoid cringe sci-fi boilerplate.
+- Use separators "::" or " | " like a high-speed readout.
 
-signal_zh structure:
-■ 系統判定 (2-3句): 當前定位+偏差程度
-■ 細項解讀 (3-4句): 3個details生理意義+交互作用
-■ 風險評估 (2句): 穩定性+級聯效應
+Format requirements:
+signal_zh:
+■ 系統判定:: 基線/門檻/穩定度（2句）
+■ 細項解讀:: 3個details的意義與連動（3句）
+■ 風險評估:: 級聯方向（1句）
 
-recommendation_zh structure:
-■ 優先路徑 (2-3句): 介入順序+原因
-■ 預期軌跡 (2句): 模型推算(非保證)+時間節點
-■ 監測建議 (1句): 重測頻率+觀察指標
+recommendation_zh:
+■ 路徑:: 先止損→先穩定→再精修（2句）
+■ 監測:: 重測頻率 + 觀察點（1句）
 
-Return 14 cards strictly following schema.`;
+priority: TEXTURE=95, HYDRATION=92, others 70-88 descending
+confidence: 0.78-0.92
+
+Return 14 cards strictly matching schema.`;
 
   const user = `Metrics:\n${JSON.stringify(metrics, null, 2)}`;
 
   const body = {
-    model: "gpt-4o-2024-08-06", // ✅ 正確的模型名稱
+    model: "gpt-4o-2024-08-06",
     messages: [
       { role: "system", content: system },
       { role: "user", content: user }
@@ -451,10 +504,10 @@ Return 14 cards strictly following schema.`;
         schema
       }
     },
-    temperature: 0.6,
+    temperature: 0.55,
   };
 
-  const r = await fetch("https://api.openai.com/v1/chat/completions", { // ✅ 正確端點
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${openaiKey}`,
@@ -473,65 +526,15 @@ Return 14 cards strictly following schema.`;
 }
 
 /* =========================
-   Fallback (專業版保持不變)
+   Fallback — dynamic, no "細項一", no露餡
 ========================= */
-function buildCards(raw: any): Card[] {
-  const cards: Card[] = [
-    {
-      id:"texture",
-      title_en:"TEXTURE",
-      title_zh:"紋理",
-      score: raw.texture.score,
-      max:100,
-      signal_en:"Your texture signal registers at the lower cohort threshold, indicating measurable surface irregularity that reflects compromised stratum corneum integrity. This is not a crisis — it's a structural baseline that responds predictably to barrier reinforcement protocols. The system detects micro-roughness clusters concentrated in high-expression zones (perioral, lateral cheek), suggesting uneven desquamation cadence.",
-      signal_zh:`■ 系統判定：當前紋理指標位於參考基線下緣,系統偵測到表皮角質層完整性出現可測量的結構性偏差。這並非危機狀態,而是一個可透過屏障重建協議預期改善的起始基準點。
-
-■ 細項數據解讀：粗糙度 (72/100) 反映角質細胞排列不規則,平滑度 (64/100) 顯示表層微結構凹凸分佈不均,均勻度 (68/100) 指出高表情活動區 (口周、外側臉頰) 存在脫屑節奏不同步現象。三項指標交互作用,形成系統判定當前紋理分數的核心依據。此組合型態在臨床數據庫中對應「屏障功能待強化」群組。
-
-■ 風險與穩定性評估：當前狀態穩定,但接近需介入的臨界值。若未改善,可能觸發級聯效應:紋理粗糙 → 光散射增加 → 視覺暗沉 → 後續保養成分滲透效率下降。系統信心指數 0.90,數據完整性高。`,
-      details: raw.texture.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-      recommendation_en:"Priority: barrier re-stabilization via ceramide-dominant formulations + humectant layering. Expected trajectory: 18-24 day visible smoothness improvement (model projection, not guarantee). Monitor bi-weekly; watch for TEWL normalization as leading indicator.",
-      recommendation_zh:`■ 優先級路徑：系統建議優先採用「神經醯胺為主 + 多重保濕因子疊加」的屏障重建方案。此策略針對角質層脂質結構缺損,能同步改善三項細項指標。介入順序為:修復屏障完整性 → 提升含水能力 → 優化脫屑節奏,此路徑在系統模型中顯示最高改善效率。
-
-■ 預期軌跡：在理想條件下 (遵循協議 + 環境穩定),系統模型推算 18-24 天內可觀察到平滑度提升、光散射減少。此為數學模型推算,非醫療保證。關鍵節點:第 10-14 天屏障功能指標應出現回穩訊號。
-
-■ 監測建議：建議每 2 週重測一次,觀察 TEWL (經皮水分流失) 正規化程度,此為領先指標。`,
-      priority: 95,
-      confidence: 0.90
-    },
-    {
-      id:"hydration",
-      title_en:"HYDRATION",
-      title_zh:"含水與屏障",
-      score: raw.hydration.score,
-      max:100,
-      signal_en:"Hydration metrics fall below the optimal reference band, signaling diminished water-binding capacity and elevated trans-epidermal water loss (TEWL). Surface hydration shows acute deficit, while deep reservoir maintains partial function — a pattern indicating barrier dysfunction rather than systemic dehydration. This is a structural issue, not a symptom requiring medical intervention.",
-      signal_zh:`■ 系統判定：含水與屏障指標低於理想參考區間,系統判讀為「水分結合能力下降 + 經皮水分流失率升高」的組合型態。此模式反映的是屏障結構性功能不全,而非全身性脫水狀態,屬於局部生理適應失衡。
-
-■ 細項數據解讀：表層含水 (58/100) 顯示急性缺水訊號,深層含水 (64/100) 保有部分儲水功能,TEWL 等級為 Moderate (中度),三者交互顯示「屏障受損 → 水分持留能力弱化 → 表層脫水加速」的級聯效應。系統推論問題核心在於角質層脂質屏障完整性不足,而非單純缺水。這種模式在數據庫中對應「需優先修復屏障」的介入策略。
-
-■ 風險與穩定性評估：當前狀態穩定但偏離最佳區間。若持續未改善,可能引發敏感性上升、紋理惡化等連鎖反應。系統信心指數 0.88,數據可信度高。`,
-      details: raw.hydration.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-      recommendation_en:"Prioritize ceramide + humectant stacking (hyaluronic acid, glycerin, betaine). Expected trajectory: 14-21 day TEWL normalization window, followed by surface hydration rebound (model projection). Re-assess every 2 weeks; track morning skin tightness as subjective marker.",
-      recommendation_zh:`■ 優先級路徑：系統建議採用「神經醯胺 + 多重保濕因子堆疊」策略 (玻尿酸、甘油、甜菜鹼組合)。此方案針對屏障脂質與 NMF (天然保濕因子) 雙重缺損,能同步改善表層與深層含水能力。介入邏輯:先修復屏障阻止水分流失,再補充保濕因子提升儲水能力,最後觀察 TEWL 正規化。
-
-■ 預期軌跡：理想條件下,系統模型推算 14-21 天內 TEWL 可望回穩至正常區間,隨後表層含水指標出現反彈。此為模型推算非保證。關鍵觀察點:第 7-10 天晨起緊繃感應減輕 (主觀指標),第 14 天重測時 TEWL 應降至 Low-Moderate。
-
-■ 監測建議：每 2 週重測,搭配主觀記錄 (晨起皮膚緊繃感、上妝服貼度) 作為輔助指標。`,
-      priority: 92,
-      confidence: 0.88
-    },
-  ];
-
-  const secondaryMetrics: MetricId[] = [
-    "pore","pigmentation","wrinkle","sebum","skintone","sensitivity",
-    "clarity","elasticity","redness","brightness","firmness","pores_depth"
-  ];
-
-  const baseTitle: Record<string,[string,string]> = {
+function buildCardsFallback(raw: any): Card[] {
+  const baseTitle: Record<MetricId,[string,string]> = {
+    texture:["TEXTURE","紋理"],
     pore:["PORE","毛孔"],
     pigmentation:["PIGMENTATION","色素沉著"],
     wrinkle:["WRINKLE","細紋與摺痕"],
+    hydration:["HYDRATION","含水與屏障"],
     sebum:["SEBUM","油脂平衡"],
     skintone:["SKIN TONE","膚色一致性"],
     sensitivity:["SENSITIVITY","刺激反應傾向"],
@@ -543,40 +546,87 @@ function buildCards(raw: any): Card[] {
     pores_depth:["PORE DEPTH","毛孔深度感"],
   };
 
-  let priorityCounter = 88;
+  const order: MetricId[] = [
+    "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
+    "clarity","elasticity","redness","brightness","firmness","pores_depth",
+  ];
 
-  for (const id of secondaryMetrics) {
+  const priorityMap: Record<MetricId, number> = {
+    texture: 95, hydration: 92,
+    pore: 86, pores_depth: 84,
+    sensitivity: 82, redness: 81,
+    sebum: 80, clarity: 79,
+    brightness: 78, skintone: 77,
+    firmness: 76, elasticity: 75,
+    wrinkle: 74, pigmentation: 73,
+  };
+
+  const confidenceMap: Record<MetricId, number> = {
+    texture: 0.90, hydration: 0.88,
+    pore: 0.84, pores_depth: 0.82,
+    sensitivity: 0.83, redness: 0.82,
+    sebum: 0.81, clarity: 0.80,
+    brightness: 0.80, skintone: 0.79,
+    firmness: 0.80, elasticity: 0.79,
+    wrinkle: 0.78, pigmentation: 0.78,
+  };
+
+  const makeSignalZh = (id: MetricId, score: number, details: any[]) => {
+    const d0 = details?.[0]?.zh || "表層特徵";
+    const d1 = details?.[1]?.zh || "結構訊號";
+    const d2 = details?.[2]?.zh || "穩定度";
+
+    const status =
+      score > 85 ? "處於高穩態區間" :
+      score > 70 ? "存在可控偏差帶" :
+      "接近需介入的管理門檻";
+
+    const trend =
+      score > 80 ? "優化邊際效益遞減" :
+      "具備可回收空間";
+
+    return `■ 系統判定:: ${status}（${score}/100） | ${trend}\n` +
+           `■ 細項解讀:: ${d0} × ${d1} × ${d2}呈連動反應；偏差不是單點，而是節奏同步性不足。\n` +
+           `■ 風險評估:: 波動放大時可能觸發級聯效應（先表層、後結構），關鍵在於保持恆定性。`;
+  };
+
+  const makeRecZh = () => {
+    return `■ 路徑:: 先止損→先穩定→再精修（以一致性為目標）\n` +
+           `■ 監測:: 2 週重測一次，觀察變異幅度是否下降。`;
+  };
+
+  const makeSignalEn = (en: string, score: number) => {
+    const band = score > 85 ? "High-Steady" : score > 70 ? "Controlled Deviation" : "Managed Threshold";
+    return `${en}: ${band} (${score}/100) | Review deep readout for risk + recovery window.`;
+  };
+
+  const makeRecEn = () => `Reduce stress → stabilize consistency → refine details. Re-scan in 2 weeks.`;
+
+  return order.map((id) => {
     const m = raw[id];
-    const [en,zh] = baseTitle[id] ?? [id.toUpperCase(),"指標"];
+    const [en, zh] = baseTitle[id];
+    const score = m?.score ?? 0;
+    const details = (m?.details || []).slice(0, 3).map((d: any) => ({
+      label_en: d.en,
+      label_zh: d.zh,
+      value: d.v,
+    }));
 
-    cards.push({
+    return {
       id,
       title_en: en,
       title_zh: zh,
-      score: m.score,
+      score,
       max: 100,
-      signal_en: `The ${en.toLowerCase()} metric reflects multi-dimensional signal extraction from high-resolution imaging. Current score positions within the mid-cohort range, indicating stable baseline with minor variance clusters detected in localized zones. This is a monitoring-priority metric rather than an immediate intervention target. System interprets the three sub-metrics collectively to assess structural integrity, adaptive response capacity, and temporal stability.`,
-      signal_zh: `■ 系統判定：${zh}指標當前位於中段群組範圍內,系統判讀為「穩定基線 + 局部區域微變異」型態。此分數反映的是多維度訊號整合結果,包含結構完整性、適應性反應能力、時間穩定性三大面向的綜合評估。
-
-■ 細項數據解讀：系統偵測到 3 個子指標 (${m.details.map((d:any)=>d.zh).join('、')}) 在正常波動範圍內,無顯著偏離參考基線。此組合型態在數據庫中對應「維持穩定、觀察為主」策略。三項指標交互作用未形成級聯風險,當前屬於監測優先級而非立即介入目標。
-
-■ 風險與穩定性評估：當前狀態穩定,未偵測到臨界值突破訊號。系統建議持續觀察,暫無急迫介入需求。信心指數 0.82,數據完整性良好。`,
-      details: m.details.map((d:any)=>({label_en:d.en,label_zh:d.zh,value:d.v})),
-      recommendation_en: `Maintain current stability baseline via consistency-first approach. No aggressive intervention required; focus on preserving existing structural integrity. Expected trajectory: stable maintenance with minor fluctuation (±3-5 points) over 30-day window (model projection). Re-assess monthly.`,
-      recommendation_zh: `■ 優先級路徑:系統建議採用「維持穩定、一致性優先」策略。當前無需激進介入,重點在於保護現有結構完整性,避免不必要的刺激或變動。建議維持現行保養節奏,觀察自然波動範圍。
-
-■ 預期軌跡:理想條件下,系統模型推算 30 天內維持穩定基線,允許 ±3-5 分的正常波動。此為維持期預測非保證。
-
-■ 監測建議:建議每月重測一次,觀察長期趨勢。若連續 2 次重測顯示下降,則啟動介入協議。`,
-      priority: priorityCounter,
-      confidence: 0.82
-    });
-
-    priorityCounter -= 2;
-  }
-
-  cards.sort((a,b)=> (b.priority??0) - (a.priority??0));
-  return cards;
+      signal_en: makeSignalEn(en, score),
+      signal_zh: makeSignalZh(id, score, m?.details || []),
+      details,
+      recommendation_en: makeRecEn(),
+      recommendation_zh: makeRecZh(),
+      priority: priorityMap[id] ?? 70,
+      confidence: confidenceMap[id] ?? 0.80,
+    };
+  });
 }
 
 /* =========================
@@ -590,39 +640,40 @@ export default async function handler(req: Request) {
     const form = await req.formData();
     const files = await getFiles(form);
 
+    // 只做必要成本：primary 用於 youcam；precheck 用最大檔即可（避免多圖浪費）
     files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
-    const bytes = await Promise.all(files.map(toBytes));
-    const prechecks = bytes.map(quickPrecheck);
+    const primaryBytes = await toBytes(primaryFile);
+    const precheck = quickPrecheck(primaryBytes);
 
     const youcam = await analyzeWithYouCamSingle(primaryFile);
-
     const metricsPayload = buildMetricsPayload(youcam.raw);
 
     let openaiOut: any = null;
     try {
       openaiOut = await generateCardsWithOpenAI(metricsPayload);
-    } catch (e:any) {
+    } catch (e: any) {
       console.error("OpenAI generation failed, using fallback:", e.message);
       openaiOut = null;
     }
 
-    const finalCards: Card[] = openaiOut?.cards
-      ? openaiOut.cards
-      : buildCards(youcam.raw);
+    const baseCards: Card[] = openaiOut?.cards ? openaiOut.cards : buildCardsFallback(youcam.raw);
+    const finalCards: Card[] = baseCards.map((c) => appendGrowthToRecommendation(c));
 
     return json({
-      build: "honeytea_scan_youcam_openai_v2_optimized",
+      build: "honeytea_scan_youcam_openai_v3_clean",
       scanId: nowId(),
       precheck: {
-        ok: prechecks.every(p => p.ok),
-        warnings: Array.from(new Set(prechecks.flatMap(p => p.warnings))),
-        tips: Array.from(new Set(prechecks.flatMap(p => p.tips))),
+        ok: precheck.ok,
+        warnings: precheck.warnings,
+        tips: precheck.tips,
       },
       cards: finalCards,
-      summary_en: openaiOut?.summary_en ?? "Clinical-grade skin analysis complete. Multi-dimensional signals extracted and interpreted via HONEY.TEA Skin Vision AI system.",
-      summary_zh: openaiOut?.summary_zh ?? "臨床級皮膚分析完成。HONEY.TEA Skin Vision AI 系統已完成多維度訊號擷取與解讀。",
+      summary_en: (openaiOut?.summary_en ??
+        "Skin analysis complete. Signals prioritized for review.").slice(0, 220),
+      summary_zh: (openaiOut?.summary_zh ??
+        "皮膚分析完成。已完成訊號排序與優先級標記，點開卡片查看深層判讀與回收窗口。").slice(0, 220),
       meta: {
         youcam_task_id: youcam.taskId,
         youcam_task_status: youcam.task_status,
@@ -639,10 +690,10 @@ export default async function handler(req: Request) {
         error: "scan_retake",
         code: "error_src_face_too_small",
         tips: [
-          "鏡頭再靠近一點:臉部寬度需佔畫面 60–80%。",
-          "臉置中、正面直視,避免低頭/側臉。",
-          "額頭露出(瀏海撥開),避免眼鏡遮擋。",
-          "光線均勻:面向窗戶或柔光補光,避免背光。",
+          "鏡頭再靠近一點：臉部寬度需佔畫面 60–80%。",
+          "臉置中、正面直視，避免低頭/側臉。",
+          "額頭露出（瀏海撥開），避免眼鏡遮擋。",
+          "光線均勻：面向窗戶或柔光補光，避免背光。",
         ],
       }, 200);
     }
@@ -652,8 +703,8 @@ export default async function handler(req: Request) {
         error: "scan_retake",
         code: "error_lighting_dark",
         tips: [
-          "光線不足:請面向窗戶或補光燈,避免背光。",
-          "確保臉部明亮均勻,不要只有額頭亮或鼻翼反光。",
+          "光線不足：請面向窗戶或補光燈，避免背光。",
+          "確保臉部明亮均勻，不要只有額頭亮或鼻翼反光。",
         ],
       }, 200);
     }
@@ -663,8 +714,8 @@ export default async function handler(req: Request) {
         error: "scan_retake",
         code: "error_src_face_out_of_bound",
         tips: [
-          "臉部超出範圍:請把臉放回畫面中心。",
-          "保持頭部穩定,避免左右大幅移動。",
+          "臉部超出範圍：請把臉放回畫面中心。",
+          "保持頭部穩定，避免左右大幅移動。",
         ],
       }, 200);
     }
@@ -672,4 +723,3 @@ export default async function handler(req: Request) {
     return json({ error: "scan_failed", message: msg }, 500);
   }
 }
-
