@@ -1,5 +1,5 @@
 // /api/scan.ts
-import type { VercelRequest, VercelResponse } from "vercel"
+import type { IncomingMessage, ServerResponse } from "http"
 
 export const config = {
   api: {
@@ -7,7 +7,14 @@ export const config = {
   },
 }
 
-// ====== 型別 ======
+// ===== 型別（不用 vercel 套件）=====
+type Req = IncomingMessage & { method?: string }
+type Res = ServerResponse & {
+  status: (code: number) => Res
+  json: (data: any) => void
+}
+
+// ===== 卡片型別 =====
 type Card = {
   id: string
   title_en: string
@@ -23,24 +30,23 @@ type Card = {
   confidence: number
 }
 
-// ====== 工具 ======
-function ok(res: VercelResponse, data: any) {
-  res.status(200).json(data)
-}
+// ===== handler =====
+export default async function handler(req: Req, res: Res) {
+  res.status = function (code: number) {
+    res.statusCode = code
+    return res
+  }
+  res.json = function (data: any) {
+    res.setHeader("Content-Type", "application/json")
+    res.end(JSON.stringify(data))
+  }
 
-function fail(res: VercelResponse, message: string) {
-  res.status(500).json({ error: message })
-}
-
-// ====== 主 handler ======
-export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" })
   }
 
   try {
-    // ⚠️ 目前只做穩定回傳，不分析影像（先活）
-    // 你前端只需要「有 cards」就能顯示報告
+    // 🔒 先穩定回傳「一定能顯示的報告」
 
     const cards: Card[] = [
       {
@@ -87,27 +93,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         priority: 92,
         confidence: 0.88,
       },
-      {
-        id: "wrinkle",
-        title_en: "WRINKLE",
-        title_zh: "細紋與摺痕",
-        score: 97,
-        max: 100,
-        signal_en:
-          "Fine-line activity remains within expected variance. Prevention window remains open.",
-        signal_zh:
-          "細紋活動仍在正常變異範圍內，屬於可預防階段。",
-        details: [],
-        recommendation_en:
-          "Maintain consistency to preserve current stability.",
-        recommendation_zh:
-          "維持節奏一致，有助於延緩進展。",
-        priority: 80,
-        confidence: 0.82,
-      },
     ]
 
-    ok(res, {
+    return res.status(200).json({
       summary_en:
         "HD skin analysis complete. Fourteen signals generated; primary indicators prioritized for review.",
       summary_zh:
@@ -115,7 +103,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       cards,
     })
   } catch (e: any) {
-    fail(res, e?.message || "Scan failed")
+    return res.status(500).json({ error: e?.message || "Scan failed" })
   }
 }
 
