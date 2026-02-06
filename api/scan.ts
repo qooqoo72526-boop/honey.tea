@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 export const config = {
   runtime: "edge",
   regions: ["sin1", "hnd1", "icn1"],
