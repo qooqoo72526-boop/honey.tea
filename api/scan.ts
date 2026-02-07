@@ -43,7 +43,6 @@ async function getFiles(form: FormData) {
   const f1 = form.get("image1");
   const f2 = form.get("image2");
   const f3 = form.get("image3");
-
   if (!(f1 instanceof File)) throw new Error("Missing image1");
 
   const files: File[] = [f1];
@@ -183,7 +182,6 @@ async function youcamPollTask(taskId: string, maxMs = 65000) {
     await sleep(wait);
     wait = Math.min(wait * 1.6, 8000);
   }
-
   throw new Error("YouCam task timeout");
 }
 
@@ -303,20 +301,17 @@ async function analyzeWithYouCamSingle(primaryFile: File) {
 }
 
 /* =========================
-   Narrative style: 8 designed tones (server-side)
-   - Still returns 14 cards (no schema change)
-   - But each metric gets a different voice bucket
+   Tone bucket (align to 8 card visuals)
 ========================= */
-
 type Tone =
-  | "LIQUID"       // hydration
-  | "RHYTHM"       // sebum
-  | "PULSE"        // redness
-  | "THRESHOLD"    // sensitivity
-  | "GRID"         // texture
-  | "OPTICS"       // clarity/brightness/skintone
-  | "VECTOR"       // elasticity/firmness/wrinkle
-  | "CUT"          // pore/pores_depth/pigmentation
+  | "LIQUID"
+  | "RHYTHM"
+  | "PULSE"
+  | "THRESHOLD"
+  | "GRID"
+  | "OPTICS"
+  | "VECTOR"
+  | "CUT";
 
 function toneOf(id: MetricId): Tone {
   if (id === "hydration") return "LIQUID";
@@ -329,18 +324,18 @@ function toneOf(id: MetricId): Tone {
   return "CUT";
 }
 
-// remove ugly symbols from any OpenAI output just in case
 function cleanNarr(s: string) {
   return (s || "")
     .replace(/::/g, " · ")
     .replace(/■/g, "")
+    .replace(/[•●■◆]/g, "")
     .replace(/\s+\|\s+/g, " · ")
     .replace(/\s{2,}/g, " ")
     .trim();
 }
 
 /* =========================
-   Growth (same as your aligned logic)
+   Growth (aligned, server-side)
 ========================= */
 function growthParams(id: MetricId) {
   if (id === "hydration" || id === "clarity" || id === "texture" || id === "brightness") return { k: 0.78, band: "快回應" };
@@ -375,25 +370,24 @@ function appendGrowthToRecommendation(card: Card) {
   const en = (card.recommendation_en || "").trim();
 
   const zhHas = /成長空間|可回收|回收窗口|Recovery|Growth/i.test(zh);
-  const enHas = /growth potential|recovery window|recoverable/i.test(en);
+  const enHas = /growth|recovery/i.test(en);
 
-  const g = growthRange(card.id as MetricId, card.score, card.confidence);
+  const g = growthRange(card.id, card.score, card.confidence);
   const lineZh = `成長空間：可回收 ${g.lo}–${g.hi}%（阻力：${g.drag}｜${g.band}）`;
   const lineEn = `Growth Window: ${g.lo}-${g.hi}% (Drag: ${g.drag})`;
 
   if (!zhHas) card.recommendation_zh = (zh ? `${zh}\n${lineZh}` : lineZh);
   if (!enHas) card.recommendation_en = (en ? `${en}\n${lineEn}` : lineEn);
 
-  card.signal_zh = cleanNarr(card.signal_zh).slice(0, 1200);
-  card.recommendation_zh = cleanNarr(card.recommendation_zh).slice(0, 650);
-  card.signal_en = (card.signal_en || "").slice(0, 420);
-  card.recommendation_en = (card.recommendation_en || "").slice(0, 260);
-
+  card.signal_zh = cleanNarr(card.signal_zh);
+  card.recommendation_zh = cleanNarr(card.recommendation_zh);
+  card.signal_en = cleanNarr(card.signal_en);
+  card.recommendation_en = cleanNarr(card.recommendation_en);
   return card;
 }
 
 /* =========================
-   OpenAI — schema (no ugly symbols) + 8-tone guidance
+   OpenAI: JSON Schema + anti-template rules
 ========================= */
 function cardSchema() {
   const metricEnum: MetricId[] = [
@@ -406,7 +400,7 @@ function cardSchema() {
     additionalProperties: false,
     required: ["summary_en", "summary_zh", "cards"],
     properties: {
-      summary_en: { type: "string", minLength: 40 },
+      summary_en: { type: "string", minLength: 30 },
       summary_zh: { type: "string", minLength: 20 },
       cards: {
         type: "array",
@@ -427,8 +421,7 @@ function cardSchema() {
             title_zh: { type: "string", minLength: 1 },
             score: { type: "integer", minimum: 0, maximum: 100 },
             max: { type: "integer", enum: [100] },
-            // keep deep but not essay
-            signal_en: { type: "string", minLength: 80 },
+            signal_en: { type: "string", minLength: 60 },
             signal_zh: { type: "string", minLength: 220 },
             details: {
               type: "array",
@@ -445,7 +438,7 @@ function cardSchema() {
                 },
               },
             },
-            recommendation_en: { type: "string", minLength: 60 },
+            recommendation_en: { type: "string", minLength: 50 },
             recommendation_zh: { type: "string", minLength: 140 },
             priority: { type: "integer", minimum: 1, maximum: 100 },
             confidence: { type: "number", minimum: 0, maximum: 1 },
@@ -484,6 +477,7 @@ function buildMetricsPayload(raw: any) {
     const [en,zh] = baseTitle[id];
     return {
       id,
+      tone: toneOf(id),
       title_en: en,
       title_zh: zh,
       score: m.score,
@@ -492,7 +486,6 @@ function buildMetricsPayload(raw: any) {
         label_zh: d.zh,
         value: d.v,
       })),
-      tone: toneOf(id), // <— extra hint to model (not used by schema; will be ignored unless we include it)
     };
   });
 }
@@ -501,44 +494,39 @@ async function generateCardsWithOpenAI(metrics: any[]) {
   const openaiKey = mustEnv("OPENAI_API_KEY");
   const schema = cardSchema();
 
-  // NOTE: user asked no ugly symbols; no "::", no "■"
-  const system = `You are HONEY.TEA Skin Vision — a premium futurist scan voice (cosmic + professional), NOT medical, NOT marketing.
+  const system = `You are HONEY.TEA Skin Vision — a premium US-grade futurist skin scan voice.
+NOT medical. NOT marketing. No "system boot", no "processing" filler.
 
 Hard rules:
-- DO NOT change any provided scores/details.
-- Chinese is the primary narrative. Keep it deep but compact. No filler, no slogans.
-- Avoid words: 病人/疾病/治療/恐嚇/醫療保證/療程推薦/建議購買.
-- Avoid ugly symbols like "■" or "::". Use clean sentences and line breaks only.
+- Do NOT change scores/details.
+- No symbols: "■", "::", bullets. Use clean line breaks only.
+- Each metric must read DIFFERENT. If outputs feel repetitive, it fails.
 
-Style:
-- Think "instrument panel + cosmic field notes".
-- Use vocabulary: 基線, 門檻, 穩定度, 變異, 軌跡, 級聯效應, 回收窗口.
-- Each metric must feel different by tone bucket:
-  LIQUID (hydration): layer, reservoir, TEWL as leakage, re-stabilize.
-  RHYTHM (sebum): rhythm, phase shift, balance, cycle.
-  PULSE (redness): hotspots, pulse field, threshold, calm the field.
-  THRESHOLD (sensitivity): threshold, trigger, tolerance window, stability first.
-  GRID (texture): grid, micro-roughness, scattering, surface cadence.
-  OPTICS (clarity/brightness/skintone): reflection, refraction, contrast zones, optical noise.
-  VECTOR (elasticity/firmness/wrinkle): vector, support, rebound, structural inertia.
-  CUT (pore/pores_depth/pigmentation): depth, edges, accumulation, mapping.
+Anti-template rules (mandatory):
+1) In signal_zh, you MUST mention each of the 3 details.label_zh exactly once.
+2) Each card must use its own tone bucket (LIQUID/RHYTHM/PULSE/THRESHOLD/GRID/OPTICS/VECTOR/CUT) and vocabulary.
+3) Avoid repeating the same sentence skeleton across cards.
+4) Keep paragraphs short: 3 paragraphs only.
 
-Output format (no bullets):
-signal_zh: 3 short paragraphs:
-1) 系統判定（2句）
-2) 細項連動（3句，引用3個details）
-3) 風險方向（1句，平靜、不恐嚇）
+signal_zh (3 paragraphs, line breaks only):
+P1 系統判定：2句（基線/門檻/穩定度）
+P2 細項連動：3句（引用3個 details.label_zh 各一次 + 交互）
+P3 風險方向：1句（平靜、不恐嚇，提級聯效應或穩定度）
 
-recommendation_zh: 2 short paragraphs:
-1) 路徑（2句，先止損→先穩定→再精修，講邏輯）
-2) 監測（1句，何時重測＋看什麼）
+recommendation_zh (2 paragraphs):
+P1 路徑：2句（先止損→先穩定→再精修，講邏輯，不推療程）
+P2 監測：1句（重測頻率 + 要看的指標）
+
+English:
+signal_en: one compact sentence (instrument readout style).
+recommendation_en: one compact line.
 
 priority: TEXTURE=95, HYDRATION=92, others 70-88 descending.
 confidence range: 0.78-0.92.
 
 Return 14 cards strictly matching schema.`;
 
-  const user = `Metrics:\n${JSON.stringify(metrics, null, 2)}`;
+  const user = `Metrics (tone included):\n${JSON.stringify(metrics, null, 2)}`;
 
   const body = {
     model: "gpt-4o-2024-08-06",
@@ -574,145 +562,20 @@ Return 14 cards strictly matching schema.`;
 
   const out = JSON.parse(content);
 
-  // safety clean: strip any accidental symbols
   if (out?.cards && Array.isArray(out.cards)) {
     out.cards = out.cards.map((c: any) => ({
       ...c,
       signal_zh: cleanNarr(c.signal_zh),
       recommendation_zh: cleanNarr(c.recommendation_zh),
-      signal_en: (c.signal_en || "").replace(/::/g, " - ").replace(/■/g, "").trim(),
-      recommendation_en: (c.recommendation_en || "").replace(/::/g, " - ").replace(/■/g, "").trim(),
+      signal_en: cleanNarr(c.signal_en),
+      recommendation_en: cleanNarr(c.recommendation_en),
     }));
   }
+
   out.summary_zh = cleanNarr(out.summary_zh || "");
-  out.summary_en = (out.summary_en || "").replace(/::/g, " - ").replace(/■/g, "").trim();
+  out.summary_en = cleanNarr(out.summary_en || "");
 
   return out;
-}
-
-/* =========================
-   Fallback — 8-tone, deep, no ugly symbols, no露餡
-========================= */
-function buildCardsFallback(raw: any): Card[] {
-  const baseTitle: Record<MetricId,[string,string]> = {
-    texture:["TEXTURE","紋理"],
-    pore:["PORE","毛孔"],
-    pigmentation:["PIGMENTATION","色素沉著"],
-    wrinkle:["WRINKLE","細紋與摺痕"],
-    hydration:["HYDRATION","含水與屏障"],
-    sebum:["SEBUM","油脂平衡"],
-    skintone:["SKIN TONE","膚色一致性"],
-    sensitivity:["SENSITIVITY","刺激反應傾向"],
-    clarity:["CLARITY","表層清晰度"],
-    elasticity:["ELASTICITY","彈性回彈"],
-    redness:["REDNESS","泛紅強度"],
-    brightness:["BRIGHTNESS","亮度狀態"],
-    firmness:["FIRMNESS","緊緻支撐"],
-    pores_depth:["PORE DEPTH","毛孔深度感"],
-  };
-
-  const order: MetricId[] = [
-    "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
-    "clarity","elasticity","redness","brightness","firmness","pores_depth",
-  ];
-
-  const priorityMap: Record<MetricId, number> = {
-    texture: 95, hydration: 92,
-    pore: 86, pores_depth: 84,
-    sensitivity: 82, redness: 81,
-    sebum: 80, clarity: 79,
-    brightness: 78, skintone: 77,
-    firmness: 76, elasticity: 75,
-    wrinkle: 74, pigmentation: 73,
-  };
-
-  const confidenceMap: Record<MetricId, number> = {
-    texture: 0.90, hydration: 0.88,
-    pore: 0.84, pores_depth: 0.82,
-    sensitivity: 0.83, redness: 0.82,
-    sebum: 0.81, clarity: 0.80,
-    brightness: 0.80, skintone: 0.79,
-    firmness: 0.80, elasticity: 0.79,
-    wrinkle: 0.78, pigmentation: 0.78,
-  };
-
-  const makeSignalZh = (id: MetricId, score: number, details: any[]) => {
-    const tone = toneOf(id);
-    const d0 = details?.[0]?.zh || "表層特徵";
-    const d1 = details?.[1]?.zh || "結構訊號";
-    const d2 = details?.[2]?.zh || "穩定度";
-
-    const band = score > 85 ? "靠近穩態上緣" : score > 70 ? "落在可控偏差帶" : "接近需要管理的門檻";
-    const drift = score > 80 ? "回收窗口偏窄" : "回收窗口仍然充足";
-
-    const toneLine =
-      tone === "LIQUID" ? "水位是分層訊號，先看流失再看回補。" :
-      tone === "RHYTHM" ? "油脂是節奏訊號，先對齊相位再談平衡。" :
-      tone === "PULSE" ? "泛紅是場的脈衝，不是單點事件。" :
-      tone === "THRESHOLD" ? "敏感是門檻型反應，先穩定耐受窗口。" :
-      tone === "GRID" ? "紋理是網格與散射，節奏會決定外觀一致性。" :
-      tone === "OPTICS" ? "光學表現看反射與對比，噪訊會偷走乾淨度。" :
-      tone === "VECTOR" ? "力學是向量，支撐與回彈才是核心。" :
-      "切面型訊號看深度與邊緣，累積會改變輪廓。";
-
-    return (
-      `系統判定：${baseTitle[id][1]} ${band}（${score}/100），${drift}。${toneLine}\n\n` +
-      `細項連動：${d0}、${d1}、${d2}在同一條軌跡上互相拉扯。這不是單點問題，而是節奏與穩定度的分歧，會先改變視覺一致性，再影響維持時間。\n\n` +
-      `風險方向：當環境或作息波動放大，這一類訊號容易先出現變異並引發級聯效應，但目前仍在可控範圍。`
-    );
-  };
-
-  const makeRecZh = (id: MetricId) => {
-    const tone = toneOf(id);
-    const line1 =
-      tone === "LIQUID" ? "路徑：先止漏（降低流失）→ 再回補（分層補水）→ 最後穩定（讓水位可維持）。" :
-      tone === "RHYTHM" ? "路徑：先止損（降低刺激）→ 再對齊節奏（讓油水平衡）→ 最後精修（維持乾淨度）。" :
-      tone === "PULSE" ? "路徑：先降擾動（避免觸發）→ 再穩定場（降低熱區）→ 最後精修（回到一致）。" :
-      tone === "THRESHOLD" ? "路徑：先縮小觸發源 → 再擴耐受窗口 → 最後精修（把變異壓低）。" :
-      tone === "GRID" ? "路徑：先穩定角質節奏 → 再細化表面 → 最後精修（讓散射下降）。" :
-      tone === "OPTICS" ? "路徑：先降低光學噪訊 → 再拉回對比 → 最後精修（讓反射乾淨）。" :
-      tone === "VECTOR" ? "路徑：先守住支撐 → 再訓練回彈 → 最後精修（避免結構慣性反撲）。" :
-      "路徑：先固定邊界 → 再處理累積 → 最後精修（讓輪廓更乾淨）。";
-
-    return (
-      `${line1}\n\n` +
-      `監測：建議 2 週重測一次，觀察穩定度與變異幅度是否下降。`
-    );
-  };
-
-  const makeSignalEn = (en: string, score: number) => {
-    const band = score > 85 ? "high-steady" : score > 70 ? "controlled deviation" : "managed threshold";
-    return `${en}: ${band} (${score}/100).`;
-  };
-
-  const makeRecEn = () => `Stabilize first → refine second. Re-scan in 2 weeks.`;
-
-  return order.map((id) => {
-    const m = raw[id];
-    const [en, zh] = baseTitle[id];
-    const score = m?.score ?? 0;
-
-    const details = (m?.details || []).slice(0, 3).map((d: any) => ({
-      label_en: d.en,
-      label_zh: d.zh,
-      value: d.v,
-    }));
-
-    return {
-      id,
-      title_en: en,
-      title_zh: zh,
-      score,
-      max: 100,
-      signal_en: makeSignalEn(en, score),
-      signal_zh: makeSignalZh(id, score, m?.details || []),
-      details,
-      recommendation_en: makeRecEn(),
-      recommendation_zh: makeRecZh(id),
-      priority: priorityMap[id] ?? 70,
-      confidence: confidenceMap[id] ?? 0.80,
-    };
-  });
 }
 
 /* =========================
@@ -725,10 +588,10 @@ export default async function handler(req: Request) {
 
     const form = await req.formData();
     const files = await getFiles(form);
-
     files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
+    // ✅ cost sane: precheck only primary
     const primaryBytes = await toBytes(primaryFile);
     const precheck = quickPrecheck(primaryBytes);
 
@@ -738,13 +601,18 @@ export default async function handler(req: Request) {
     let openaiOut: any = null;
     try {
       openaiOut = await generateCardsWithOpenAI(metricsPayload);
-    } catch (e: any) {
+    } catch (e:any) {
       console.error("OpenAI generation failed, using fallback:", e.message);
       openaiOut = null;
     }
 
+    // fallback uses 8-tone logic, no露餡
     const baseCards: Card[] = openaiOut?.cards ? openaiOut.cards : buildCardsFallback(youcam.raw);
     const finalCards: Card[] = baseCards.map((c) => appendGrowthToRecommendation(c));
+
+    // summary aligned with your front-end "Signal Architecture"
+    const summaryZh = cleanNarr(openaiOut?.summary_zh ?? "掃描完成。訊號已排序，面板可直接閱讀。");
+    const summaryEn = cleanNarr(openaiOut?.summary_en ?? "Scan complete. Signals prioritized for review.");
 
     return json({
       build: "honeytea_scan_youcam_openai_v4_narrative_aligned",
@@ -755,10 +623,8 @@ export default async function handler(req: Request) {
         tips: precheck.tips,
       },
       cards: finalCards,
-      summary_en: (openaiOut?.summary_en ??
-        "Scan complete. Signals prioritized for review.").replace(/::/g, " - ").replace(/■/g, "").slice(0, 220),
-      summary_zh: cleanNarr(openaiOut?.summary_zh ??
-        "掃描完成。訊號已排序，面板可直接閱讀。").slice(0, 220),
+      summary_en: summaryEn.slice(0, 220),
+      summary_zh: summaryZh.slice(0, 220),
       meta: {
         youcam_task_id: youcam.taskId,
         youcam_task_status: youcam.task_status,
