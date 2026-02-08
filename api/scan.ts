@@ -64,14 +64,14 @@ function quickPrecheck(bytes: Uint8Array) {
 
   if (sizeKB < 60) {
     warnings.push("LOW_RESOLUTION");
-    tips.push("Image looks compressed. Use a clearer photo (avoid screenshots).");
+    tips.push("Image quality is low. Use a clearer photo (avoid screenshots).");
   }
 
   let sample = 0, sum = 0;
   for (let i = 0; i < bytes.length; i += 401) { sum += bytes[i]; sample++; }
   const avg = sample ? sum / sample : 120;
 
-  if (avg < 85) { warnings.push("TOO_DARK"); tips.push("Lighting is low. Face a window or brighter light."); }
+  if (avg < 85) { warnings.push("TOO_DARK"); tips.push("Low light. Face a window or add soft front light."); }
   if (avg > 185) { warnings.push("TOO_BRIGHT"); tips.push("Highlights are strong. Avoid direct overhead light."); }
 
   tips.push("Keep white balance neutral. Avoid warm indoor bulbs when possible.");
@@ -139,7 +139,7 @@ async function youcamCreateTask(srcFileId: string, dstActions: string[]) {
     src_file_id: srcFileId,
     dst_actions: dstActions,
     miniserver_args: {
-      enable_mask_overlay: false,
+      enable_mask_overlay: false, // ✅ 保留（A 方案，不貼醜 mask）
       enable_dark_background_hd_pore: true,
       color_dark_background_hd_pore: "3D3D3D",
       opacity_dark_background_hd_pore: 0.4,
@@ -303,7 +303,7 @@ async function analyzeWithYouCamSingle(primaryFile: File) {
 }
 
 /* =========================
-   Tone buckets (align with front-end card styles)
+   Tone buckets
 ========================= */
 type Tone =
   | "LIQUID"
@@ -326,47 +326,27 @@ function toneOf(id: MetricId): Tone {
   return "CUT";
 }
 
-function cleanNarr(s: string) {
-  return (s || "")
-    .replace(/::/g, " · ")
-    .replace(/[•●■◆]/g, "")
-    .replace(/\s+\|\s+/g, " · ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+function speedBandOf(id: MetricId): "FAST" | "MID" | "SLOW" {
+  if (id === "hydration" || id === "texture" || id === "clarity" || id === "brightness") return "FAST";
+  if (id === "sebum" || id === "sensitivity" || id === "redness" || id === "skintone") return "MID";
+  return "SLOW";
 }
 
 /* =========================
-   ✅ Server-side formatter (like your reference screenshot)
+   Server-side formatter (reference-like)
 ========================= */
 function formatForPanelZh(input: string) {
   let s = cleanNarr(input || "");
-
-  // normalize
   s = s.replace(/\u3000/g, " ");
-  s = s.replace(/ *・ */g, "\n・"); // bullets on new lines
+  s = s.replace(/ *・ */g, "\n・");
   s = s.replace(/\s*→\s*/g, " → ");
 
-  // force paragraph anchors
-  const anchors = ["系統判定", "判定", "細項連動", "細項解讀", "風險方向", "風險評估", "路徑", "監測", "回收窗口", "成長空間", "結論"];
-  for (const a of anchors) {
-    s = s.replace(new RegExp(`${a}\\s*：`, "g"), `\n\n${a}：`);
-  }
+  const anchors = ["系統判定", "細項解讀", "細項連動", "風險方向", "路徑", "監測", "成長空間", "結論"];
+  for (const a of anchors) s = s.replace(new RegExp(`${a}\\s*：`, "g"), `\n\n${a}：`);
 
-  // sentence wrap
   s = s.replace(/。(?=[^\n])/g, "。\n");
-
-  // collapse extra newlines
   s = s.replace(/\n{3,}/g, "\n\n");
-
-  // trim lines
   s = s.split("\n").map(x => x.trim()).join("\n").trim();
-
-  // ensure at least 2 blocks if long
-  const lines = s.split("\n");
-  if (lines.length >= 8 && !s.includes("\n\n")) {
-    s = lines.slice(0, 3).join("\n") + "\n\n" + lines.slice(3).join("\n");
-  }
-
   return s;
 }
 
@@ -377,7 +357,7 @@ function formatForPanelEn(input: string) {
 }
 
 /* =========================
-   Growth window (aligned)
+   Growth window
 ========================= */
 function growthParams(id: MetricId) {
   if (id === "hydration" || id === "clarity" || id === "texture" || id === "brightness") return { k: 0.78, band: "快回應" };
@@ -421,15 +401,15 @@ function appendGrowthToRecommendation(card: Card) {
   if (!zhHas) card.recommendation_zh = (zh ? `${zh}\n${lineZh}` : lineZh);
   if (!enHas) card.recommendation_en = (en ? `${en}\n${lineEn}` : lineEn);
 
-  card.signal_zh = cleanNarr(card.signal_zh).slice(0, 1200);
-  card.recommendation_zh = cleanNarr(card.recommendation_zh).slice(0, 900);
+  card.signal_zh = cleanNarr(card.signal_zh).slice(0, 1600);
+  card.recommendation_zh = cleanNarr(card.recommendation_zh).slice(0, 1200);
   card.signal_en = cleanNarr(card.signal_en).slice(0, 420);
   card.recommendation_en = cleanNarr(card.recommendation_en).slice(0, 260);
   return card;
 }
 
 /* =========================
-   OpenAI: schema + anti-template prompt
+   OpenAI schema
 ========================= */
 function cardSchema() {
   const metricEnum: MetricId[] = [
@@ -464,7 +444,7 @@ function cardSchema() {
             score: { type: "integer", minimum: 0, maximum: 100 },
             max: { type: "integer", enum: [100] },
             signal_en: { type: "string", minLength: 60 },
-            signal_zh: { type: "string", minLength: 220 },
+            signal_zh: { type: "string", minLength: 380 },         // ✅ 更深（像你範例）
             details: {
               type: "array",
               minItems: 3,
@@ -481,7 +461,7 @@ function cardSchema() {
               },
             },
             recommendation_en: { type: "string", minLength: 50 },
-            recommendation_zh: { type: "string", minLength: 140 },
+            recommendation_zh: { type: "string", minLength: 260 }, // ✅ 更深（像你範例）
             priority: { type: "integer", minimum: 1, maximum: 100 },
             confidence: { type: "number", minimum: 0, maximum: 1 },
           },
@@ -520,6 +500,7 @@ function buildMetricsPayload(raw: any) {
     return {
       id,
       tone: toneOf(id),
+      speed: speedBandOf(id),
       title_en: en,
       title_zh: zh,
       score: m.score,
@@ -532,50 +513,57 @@ function buildMetricsPayload(raw: any) {
   });
 }
 
+/* =========================
+   OpenAI generation (match your TEXTURE/HYDRATION style)
+========================= */
 async function generateCardsWithOpenAI(metrics: any[]) {
   const openaiKey = mustEnv("OPENAI_API_KEY");
   const schema = cardSchema();
 
-  const system = `You are HONEY.TEA Skin Vision — premium US-grade futurist skin scan voice.
-NOT medical. NOT marketing. No generic filler.
+  const system = `You are HONEY.TEA · FIELD — Skin Vision (Luxury Consumer Tech, Taiwan-friendly).
+Write like a top-tier beauty consultant using a calm instrument voice.
+NOT medical. NOT marketing. No sales, no fear, no "system boot".
 
 Hard rules:
 - Do NOT change any provided scores/details.
-- No symbols like "■" or "::" or bullets. Use clean line breaks only.
-- Each metric must read DIFFERENT. If repetitive, it fails.
+- No symbols like "■" or "::". You may use line breaks and "•" bullet points.
+- Every metric must sound different. If repetitive, it fails.
+- Avoid heavy jargon. Use professional but readable Chinese for Taiwan clients.
 
-Anti-template rules (mandatory):
-1) In signal_zh, mention each of the 3 details.label_zh EXACTLY ONCE.
-2) Use tone bucket vocabulary based on tone:
-LIQUID(hydration): layer, reservoir, TEWL leakage, re-stabilize.
-RHYTHM(sebum): rhythm, phase shift, balance, cycle.
-PULSE(redness): hotspots, pulse field, threshold, calm.
-THRESHOLD(sensitivity): tolerance window, triggers, stability first.
-GRID(texture): micro-roughness, scattering, surface cadence.
-OPTICS(clarity/brightness/skintone): reflection, refraction, contrast, optical noise.
-VECTOR(elasticity/firmness/wrinkle): support vector, rebound, structural inertia.
-CUT(pore/pores_depth/pigmentation): depth, edge definition, accumulation, mapping.
-3) Avoid repeating the same sentence skeleton across cards.
+MOST IMPORTANT (anti-hallucination):
+- If the metric has explicit regions in details (e.g., T-Zone/Cheek/Chin, Eye Area/Forehead/Nasolabial), you may say which region is higher.
+- If the metric has NO explicit region keys (e.g., pigmentation), do NOT claim an exact face coordinate. Use "優先觀察區" wording:
+  "在未啟用區域遮罩的模式下，系統不提供精準座標；依訊號型態，優先觀察顴骨—臉頰帶/高曝光帶。"
+  This is mandatory for pigmentation.
 
-signal_zh format (3 paragraphs, line breaks only):
-P1 系統判定：2句（基線/門檻/穩定度）
-P2 細項連動：3句（引用3個 details.label_zh 各一次 + 交互）
-P3 風險方向：1句（平靜、不恐嚇，可提級聯效應或穩定度）
+Writing format (must match this structure):
+signal_zh:
+【系統判斷說明】 (2–4 lines)
+- One calm positioning sentence (baseline/band/threshold), no scare.
+- Then "系統在影像中觀察到：" and 3 bullets (must map to the 3 details; use each details.label_zh exactly once).
+- Then a "轉折句" like: "這並不是___，而是___。" (one sentence).
+- End with a "換句話說" sentence that clarifies meaning in plain language (Taiwan-friendly).
 
-recommendation_zh format (2 paragraphs, line breaks only):
-P1 路徑：2句（先止損→先穩定→再精修，講邏輯，不推產品/療程）
-P2 監測：1句（重測頻率 + 看什麼）
+recommendation_zh:
+【系統建議（為什麼是這個建議）】 (6–10 lines)
+- First: negate wrong direction for this metric (e.g., not over-exfoliate / not brute-force).
+- Then: give a path with arrows (先___ → 再___ → 最後___), logic-based.
+- Then: monitoring cadence must vary by speed:
+  FAST: mention 7–10 days "先看穩定度/均勻度/緊繃感是否下降"
+  MID: mention 10–14 days "先看波動幅度收斂"
+  SLOW: mention 21–28 days "看輪廓一致性/維持時間"
+- Mention "模型推算" with conservative ranges only. No guaranteed results.
 
-English:
-signal_en: one compact sentence (instrument readout).
-recommendation_en: one compact line.
+English fields:
+signal_en: one crisp instrument line (no essay).
+recommendation_en: one concise line.
 
 priority: TEXTURE=95, HYDRATION=92, others 70-88 descending.
 confidence: 0.78-0.92.
 
 Return 14 cards strictly matching schema.`;
 
-  const user = `Metrics (tone included):\n${JSON.stringify(metrics, null, 2)}`;
+  const user = `Metrics (tone/speed included; treat as ground truth):\n${JSON.stringify(metrics, null, 2)}`;
 
   const body = {
     model: "gpt-4o-2024-08-06",
@@ -611,7 +599,7 @@ Return 14 cards strictly matching schema.`;
 
   const out = JSON.parse(content);
 
-  // clean + formatting (server-side guarantee)
+  // Clean + enforce reference-like formatting
   if (out?.cards && Array.isArray(out.cards)) {
     out.cards = out.cards.map((c: any) => ({
       ...c,
@@ -621,6 +609,7 @@ Return 14 cards strictly matching schema.`;
       recommendation_en: formatForPanelEn(cleanNarr(c.recommendation_en || "")),
     }));
   }
+
   out.summary_zh = formatForPanelZh(cleanNarr(out.summary_zh || ""));
   out.summary_en = formatForPanelEn(cleanNarr(out.summary_en || ""));
 
@@ -628,29 +617,35 @@ Return 14 cards strictly matching schema.`;
 }
 
 /* =========================
-   ✅ Fallback (fixes TS2304)
+   Fallback — deeper, speed-aware, Taiwan-friendly
+   (still no schema change)
 ========================= */
 function buildCardsFallback(raw: any): Card[] {
-  const baseTitle: Record<MetricId, [string, string]> = {
-    texture: ["TEXTURE", "紋理"],
-    pore: ["PORE", "毛孔"],
-    pigmentation: ["PIGMENTATION", "色素沉著"],
-    wrinkle: ["WRINKLE", "細紋與摺痕"],
-    hydration: ["HYDRATION", "含水與屏障"],
-    sebum: ["SEBUM", "油脂平衡"],
-    skintone: ["SKIN TONE", "膚色一致性"],
-    sensitivity: ["SENSITIVITY", "刺激反應傾向"],
-    clarity: ["CLARITY", "表層清晰度"],
-    elasticity: ["ELASTICITY", "彈性回彈"],
-    redness: ["REDNESS", "泛紅強度"],
-    brightness: ["BRIGHTNESS", "亮度狀態"],
-    firmness: ["FIRMNESS", "緊緻支撐"],
-    pores_depth: ["PORE DEPTH", "毛孔深度感"],
+  const baseTitle: Record<MetricId,[string,string]> = {
+    texture:["TEXTURE","紋理"],
+    pore:["PORE","毛孔"],
+    pigmentation:["PIGMENTATION","色素沉著"],
+    wrinkle:["WRINKLE","細紋與摺痕"],
+    hydration:["HYDRATION","含水與屏障"],
+    sebum:["SEBUM","油脂平衡"],
+    skintone:["SKIN TONE","膚色一致性"],
+    sensitivity:["SENSITIVITY","刺激反應傾向"],
+    clarity:["CLARITY","表層清晰度"],
+    elasticity:["ELASTICITY","彈性回彈"],
+    redness:["REDNESS","泛紅強度"],
+    brightness:["BRIGHTNESS","亮度狀態"],
+    firmness:["FIRMNESS","緊緻支撐"],
+    pores_depth:["PORE DEPTH","毛孔深度感"],
   };
 
   const order: MetricId[] = [
-    "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
-    "clarity","elasticity","redness","brightness","firmness","pores_depth",
+    "texture","hydration",
+    "pore","pores_depth",
+    "sensitivity","redness",
+    "sebum","clarity",
+    "brightness","skintone",
+    "firmness","elasticity",
+    "wrinkle","pigmentation",
   ];
 
   const priorityMap: Record<MetricId, number> = {
@@ -673,57 +668,75 @@ function buildCardsFallback(raw: any): Card[] {
     wrinkle: 0.78, pigmentation: 0.78,
   };
 
-  const toneHint = (id: MetricId) => {
-    const t = toneOf(id);
-    switch (t) {
-      case "LIQUID": return "水位是分層訊號，先看流失再看回補。";
-      case "RHYTHM": return "油脂是節奏訊號，先對齊相位再談平衡。";
-      case "PULSE": return "泛紅是場的脈衝，不是單點事件。";
-      case "THRESHOLD": return "敏感是門檻型反應，先穩定耐受窗口。";
-      case "GRID": return "紋理是網格與散射，節奏決定外觀一致性。";
-      case "OPTICS": return "光學表現看反射與對比，噪訊會偷走乾淨度。";
-      case "VECTOR": return "力學是向量，支撐與回彈才是核心。";
-      case "CUT": default: return "切面型訊號看深度與邊緣，累積會改變輪廓。";
-    }
+  const cadenceZh = (id: MetricId) => {
+    const sp = speedBandOf(id);
+    if (sp === "FAST") return "監測：建議 7–10 天先看穩定度是否變乾淨（如均勻度/緊繃感/反射噪訊）。";
+    if (sp === "MID") return "監測：建議 10–14 天先看波動幅度是否收斂（比看數字上升更重要）。";
+    return "監測：建議 21–28 天看輪廓一致性與維持時間（慢回應型不適合短期追分）。";
   };
 
+  const pigmentAClause =
+    "在未啟用區域遮罩的模式下，系統不提供精準座標；依訊號型態，優先觀察顴骨—臉頰帶與高曝光帶的輪廓乾淨度。";
+
   const makeSignalZh = (id: MetricId, score: number, details: any[]) => {
-    const d0 = details?.[0]?.zh || "表層特徵";
-    const d1 = details?.[1]?.zh || "結構訊號";
-    const d2 = details?.[2]?.zh || "穩定度";
+    const d0 = details?.[0]?.zh || "細項一";
+    const d1 = details?.[1]?.zh || "細項二";
+    const d2 = details?.[2]?.zh || "細項三";
 
-    const band = score > 85 ? "靠近穩態上緣" : score > 70 ? "落在可控偏差帶" : "接近需要管理的門檻";
-    const drift = score > 80 ? "回收窗口偏窄" : "回收窗口仍然充足";
+    const band = score >= 88 ? "靠近穩定帶" : score >= 72 ? "落在可控偏差帶" : "接近需要管理的門檻";
 
-    const text =
-      `系統判定：${baseTitle[id][1]} ${band}（${score}/100），${drift}。${toneHint(id)}\n\n` +
-      `細項連動：${d0}、${d1}、${d2}在同一條軌跡上互相拉扯。這不是單點問題，而是節奏與穩定度的分歧，會先改變視覺一致性，再影響維持時間。\n\n` +
-      `風險方向：當環境或作息波動放大，這一類訊號容易先出現變異並引發級聯效應，但目前仍在可控範圍。`;
+    const toneLine =
+      toneOf(id) === "LIQUID" ? "這不是水少，而是留水能力不足。" :
+      toneOf(id) === "RHYTHM" ? "油脂不是多或少，而是節奏是否同步。" :
+      toneOf(id) === "PULSE" ? "泛紅不是事件，是波動帶的問題。" :
+      toneOf(id) === "THRESHOLD" ? "敏感不是標籤，是耐受窗口偏窄。" :
+      toneOf(id) === "GRID" ? "紋理不是老化，而是表層節奏未對齊。" :
+      toneOf(id) === "OPTICS" ? "亮與不亮不是重點，重點是反射是否乾淨。" :
+      toneOf(id) === "VECTOR" ? "線條不是突然變深，而是支撐與回彈節奏。" :
+      "這不是單點問題，而是邊界/累積/深度感的推移。";
 
-    return formatForPanelZh(text);
+    const pigmentExtra = id === "pigmentation" ? `\n${pigmentAClause}` : "";
+
+    return formatForPanelZh(
+      `【系統判斷說明】\n` +
+      `${baseTitle[id][1]}目前${band}（${score}/100）。${toneLine}${pigmentExtra}\n` +
+      `系統在影像中觀察到：\n` +
+      `• ${d0}\n• ${d1}\n• ${d2}\n` +
+      `這並不是「一下子變差」，而是狀態需要更穩定的固定方式。\n` +
+      `換句話說：先把節奏固定住，才有乾淨的趨勢線。`
+    );
   };
 
   const makeRecZh = (id: MetricId) => {
     const t = toneOf(id);
-    const line1 =
-      t === "LIQUID" ? "路徑：先止漏（降低流失）→ 再回補（分層補水）→ 最後穩定（讓水位可維持）。" :
-      t === "RHYTHM" ? "路徑：先止損（降低刺激）→ 再對齊節奏（讓油水平衡）→ 最後精修（維持乾淨度）。" :
-      t === "PULSE" ? "路徑：先降擾動（避免觸發）→ 再穩定場（降低熱區）→ 最後精修（回到一致）。" :
+    const path =
+      t === "LIQUID" ? "路徑：先止漏（降低流失）→ 再分層回補（表層追上深層）→ 最後穩定停留（讓水位可維持）。" :
+      t === "RHYTHM" ? "路徑：先降刺激 → 再對齊節奏 → 最後維持平衡（守住乾淨度）。" :
+      t === "PULSE" ? "路徑：先降擾動（避免觸發）→ 再穩定波動帶 → 最後精修（回到一致）。" :
       t === "THRESHOLD" ? "路徑：先縮小觸發源 → 再擴耐受窗口 → 最後精修（把變異壓低）。" :
-      t === "GRID" ? "路徑：先穩定角質節奏 → 再細化表面 → 最後精修（讓散射下降）。" :
-      t === "OPTICS" ? "路徑：先降低光學噪訊 → 再拉回對比 → 最後精修（讓反射乾淨）。" :
+      t === "GRID" ? "路徑：先穩定角質節奏 → 再細化表面排列 → 最後精修（讓散射下降）。" :
+      t === "OPTICS" ? "路徑：先降低光學噪訊 → 再拉回對比 → 最後精修（反射更乾淨）。" :
       t === "VECTOR" ? "路徑：先守住支撐 → 再訓練回彈 → 最後精修（避免結構慣性反撲）。" :
-      "路徑：先固定邊界 → 再處理累積 → 最後精修（讓輪廓更乾淨）。";
+      "路徑：先固定邊界 → 再處理累積/深度推移 → 最後精修輪廓。";
 
-    return formatForPanelZh(`${line1}\n\n監測：建議 2 週重測一次，觀察穩定度與變異幅度是否下降。`);
+    return formatForPanelZh(
+      `【系統建議（為什麼是這個建議）】\n` +
+      `系統不建議短期加強或強度爆衝，這會把穩定帶打回波動帶。\n` +
+      `${path}\n` +
+      `${cadenceZh(id)}\n` +
+      `成長空間：請以「連續維持」為前提看待模型推算（非保證）。`
+    );
   };
 
   const makeSignalEn = (en: string, score: number) => {
-    const band = score > 85 ? "high-steady" : score > 70 ? "controlled deviation" : "managed threshold";
-    return formatForPanelEn(`${en}: ${band} (${score}/100).`);
+    const band = score >= 88 ? "stable band" : score >= 72 ? "controlled deviation" : "near threshold";
+    return formatForPanelEn(`${en}: ${band}.`);
   };
-
-  const makeRecEn = () => formatForPanelEn(`Stabilize first → refine second. Re-scan in 2 weeks.`);
+  const makeRecEn = (id: MetricId) => {
+    const sp = speedBandOf(id);
+    const w = sp === "FAST" ? "7–10d" : sp === "MID" ? "10–14d" : "21–28d";
+    return formatForPanelEn(`Stabilize first → refine second. Monitor in ${w}.`);
+  };
 
   const cards: Card[] = order.map((id) => {
     const m = raw?.[id] || { score: 0, details: [] };
@@ -745,7 +758,7 @@ function buildCardsFallback(raw: any): Card[] {
       signal_en: makeSignalEn(en, score),
       signal_zh: makeSignalZh(id, score, m.details || []),
       details,
-      recommendation_en: makeRecEn(),
+      recommendation_en: makeRecEn(id),
       recommendation_zh: makeRecZh(id),
       priority: priorityMap[id] ?? 70,
       confidence: confidenceMap[id] ?? 0.80,
@@ -766,10 +779,10 @@ export default async function handler(req: Request) {
 
     const form = await req.formData();
     const files = await getFiles(form);
+
     files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
-    // precheck only primary (cost sane)
     const primaryBytes = await toBytes(primaryFile);
     const precheck = quickPrecheck(primaryBytes);
 
@@ -787,7 +800,6 @@ export default async function handler(req: Request) {
     const baseCards: Card[] = openaiOut?.cards ? openaiOut.cards : buildCardsFallback(youcam.raw);
     const finalCards: Card[] = baseCards.map((c) => appendGrowthToRecommendation(c));
 
-    // ✅ Guarantee reference-like formatting even after appending growth
     const finalCardsFormatted: Card[] = finalCards.map((c) => ({
       ...c,
       signal_zh: formatForPanelZh(c.signal_zh),
@@ -796,11 +808,14 @@ export default async function handler(req: Request) {
       recommendation_en: formatForPanelEn(c.recommendation_en),
     }));
 
-    const summaryZh = formatForPanelZh(cleanNarr(openaiOut?.summary_zh ?? "掃描完成。訊號已排序，面板可直接閱讀。")).slice(0, 260);
-    const summaryEn = formatForPanelEn(cleanNarr(openaiOut?.summary_en ?? "Scan complete. Signals prioritized for review.")).slice(0, 220);
+    // ✅ Summary wording: avoid "掃描完成" (你說俗氣)
+    const summaryZh = formatForPanelZh(cleanNarr(openaiOut?.summary_zh ??
+      "訊號已進入判讀階段。系統已完成排序，以下為關鍵訊號。")).slice(0, 280);
+    const summaryEn = formatForPanelEn(cleanNarr(openaiOut?.summary_en ??
+      "Signals are ready. Priority has been applied for review.")).slice(0, 240);
 
     return json({
-      build: "honeytea_scan_youcam_openai_v5_full_integrated",
+      build: "honeytea_scan_youcam_openai_v6_deep_taiwan_aligned",
       scanId: nowId(),
       precheck: {
         ok: precheck.ok,
@@ -826,10 +841,10 @@ export default async function handler(req: Request) {
         error: "scan_retake",
         code: "error_src_face_too_small",
         tips: [
-          "鏡頭再靠近一點：臉部寬度需佔畫面 60–80%。",
-          "臉置中、正面直視，避免低頭/側臉。",
-          "額頭露出（瀏海撥開），避免眼鏡遮擋。",
-          "光線均勻：面向窗戶或柔光補光，避免背光。",
+          "距離太遠：臉部請佔畫面約 60–80%。",
+          "保持正面置中，避免側臉或低頭。",
+          "額頭與眼周需清晰可見（瀏海請撥開）。",
+          "使用均勻柔光，避免背光。",
         ],
       }, 200);
     }
@@ -839,8 +854,8 @@ export default async function handler(req: Request) {
         error: "scan_retake",
         code: "error_lighting_dark",
         tips: [
-          "光線不足：請面向窗戶或補光燈，避免背光。",
-          "確保臉部明亮均勻，不要只有額頭亮或鼻翼反光。",
+          "光線不足：請面向窗戶或補柔光。",
+          "避免背光與局部強反光（額頭/鼻翼）。",
         ],
       }, 200);
     }
@@ -850,12 +865,12 @@ export default async function handler(req: Request) {
         error: "scan_retake",
         code: "error_src_face_out_of_bound",
         tips: [
-          "臉部超出範圍：請把臉放回畫面中心。",
-          "保持頭部穩定，避免左右大幅移動。",
+          "超出框位：請回到畫面中心。",
+          "保持頭部穩定，避免左右快速移動。",
         ],
       }, 200);
     }
 
-    return json({ error: "scan_failed", message: msg }, 500);
+    return json({ error: "scan_failed", message: "Scan failed. Please retry." }, 500);
   }
 }
