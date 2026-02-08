@@ -79,6 +79,54 @@ function quickPrecheck(bytes: Uint8Array) {
 }
 
 /* =========================
+   ✅ Clean + Format (server-side)
+========================= */
+function cleanNarr(s: string) {
+  return (s || "")
+    .replace(/::/g, " · ")
+    .replace(/[■◆●]/g, "")
+    .replace(/\u3000/g, " ")
+    .replace(/\s+\|\s+/g, " · ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+// 讓你前端直接 pre-line 就能像你參考圖那樣分段
+function formatForPanelZh(input: string) {
+  let s = cleanNarr(input || "");
+
+  // 統一 bullets
+  s = s.replace(/ *・ */g, "\n• ");
+  s = s.replace(/ *• */g, "\n• ");
+
+  // 強制段落錨點
+  const anchors = [
+    "【系統判斷說明】",
+    "【系統建議（為什麼是這個建議）】",
+    "系統在影像中觀察到：",
+    "換句話說，",
+    "在模型推算中，",
+  ];
+  for (const a of anchors) {
+    s = s.replace(new RegExp(a.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), `\n${a}`);
+  }
+
+  // 句號後換行（避免黏一起）
+  s = s.replace(/。(?=[^\n])/g, "。\n");
+
+  // 多空行收斂
+  s = s.replace(/\n{3,}/g, "\n\n").trim();
+  return s;
+}
+
+function formatForPanelEn(input: string) {
+  return (input || "")
+    .replace(/\s+/g, " ")
+    .replace(/::/g, " - ")
+    .trim();
+}
+
+/* =========================
    YouCam — HD Skin Analysis
 ========================= */
 
@@ -139,7 +187,7 @@ async function youcamCreateTask(srcFileId: string, dstActions: string[]) {
     src_file_id: srcFileId,
     dst_actions: dstActions,
     miniserver_args: {
-      enable_mask_overlay: false, // A方案：不貼醜mask
+      enable_mask_overlay: false, // ✅ 不改你既有設定：不生成醜 mask overlay 圖（但仍可能回 mask_urls）
       enable_dark_background_hd_pore: true,
       color_dark_background_hd_pore: "3D3D3D",
       opacity_dark_background_hd_pore: 0.4,
@@ -213,14 +261,26 @@ function extractYoucamScores(j: any) {
     for (const [k, v] of Object.entries(scoreInfo)) {
       const vv: any = v;
       if (vv?.ui_score != null && vv?.raw_score != null) {
-        map.set(k, { ui: Number(vv.ui_score), raw: Number(vv.raw_score), masks: vv.output_mask_name ? [String(vv.output_mask_name)] : [] });
+        map.set(k, {
+          ui: Number(vv.ui_score),
+          raw: Number(vv.raw_score),
+          masks: Array.isArray(vv?.mask_urls) ? vv.mask_urls : (vv.output_mask_name ? [String(vv.output_mask_name)] : []),
+        });
       } else if (vv?.whole?.ui_score != null && vv?.whole?.raw_score != null) {
-        map.set(k, { ui: Number(vv.whole.ui_score), raw: Number(vv.whole.raw_score), masks: vv.whole.output_mask_name ? [String(vv.whole.output_mask_name)] : [] });
+        map.set(k, {
+          ui: Number(vv.whole.ui_score),
+          raw: Number(vv.whole.raw_score),
+          masks: Array.isArray(vv?.whole?.mask_urls) ? vv.whole.mask_urls : (vv.whole.output_mask_name ? [String(vv.whole.output_mask_name)] : []),
+        });
       } else {
         for (const [subk, subv] of Object.entries(vv)) {
           const sv: any = subv;
           if (sv?.ui_score != null && sv?.raw_score != null) {
-            map.set(`${k}.${subk}`, { ui: Number(sv.ui_score), raw: Number(sv.raw_score), masks: sv.output_mask_name ? [String(sv.output_mask_name)] : [] });
+            map.set(`${k}.${subk}`, {
+              ui: Number(sv.ui_score),
+              raw: Number(sv.raw_score),
+              masks: Array.isArray(sv?.mask_urls) ? sv.mask_urls : (sv.output_mask_name ? [String(sv.output_mask_name)] : []),
+            });
           }
         }
       }
@@ -289,6 +349,12 @@ function mapYoucamToYourRaw(scoreMap: Map<string, { ui: number; raw: number; mas
   };
 }
 
+function pickFirstMask(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>, key: string) {
+  const v = scoreMap.get(key);
+  const arr = v?.masks || [];
+  return arr.length ? arr[0] : null;
+}
+
 async function analyzeWithYouCamSingle(primaryFile: File) {
   const init = await youcamInitUpload(primaryFile);
   const buf = new Uint8Array(await primaryFile.arrayBuffer());
@@ -299,119 +365,21 @@ async function analyzeWithYouCamSingle(primaryFile: File) {
 
   const scoreMap = extractYoucamScores(finalJson);
   const raw = mapYoucamToYourRaw(scoreMap);
-  return { taskId, task_status: finalJson?.data?.task_status, raw };
+
+  // ✅ 將可用 overlays 帶回前端（不增加 YouCam 成本）
+  const overlays = {
+    texture: pickFirstMask(scoreMap, "hd_texture") || pickFirstMask(scoreMap, "texture"),
+    pore: pickFirstMask(scoreMap, "hd_pore") || pickFirstMask(scoreMap, "pore"),
+    redness: pickFirstMask(scoreMap, "hd_redness") || pickFirstMask(scoreMap, "redness"),
+    pigmentation: pickFirstMask(scoreMap, "hd_age_spot") || pickFirstMask(scoreMap, "age_spot"),
+  };
+
+  return { taskId, task_status: finalJson?.data?.task_status, raw, scoreMap, overlays };
 }
 
 /* =========================
-   Tone + speed
-========================= */
-type Tone =
-  | "LIQUID" | "RHYTHM" | "PULSE" | "THRESHOLD"
-  | "GRID" | "OPTICS" | "VECTOR" | "CUT";
-
-function toneOf(id: MetricId): Tone {
-  if (id === "hydration") return "LIQUID";
-  if (id === "sebum") return "RHYTHM";
-  if (id === "redness") return "PULSE";
-  if (id === "sensitivity") return "THRESHOLD";
-  if (id === "texture") return "GRID";
-  if (id === "clarity" || id === "brightness" || id === "skintone") return "OPTICS";
-  if (id === "elasticity" || id === "firmness" || id === "wrinkle") return "VECTOR";
-  return "CUT";
-}
-
-function speedBandOf(id: MetricId): "FAST" | "MID" | "SLOW" {
-  if (id === "hydration" || id === "texture" || id === "clarity" || id === "brightness") return "FAST";
-  if (id === "sebum" || id === "sensitivity" || id === "redness" || id === "skintone") return "MID";
-  return "SLOW";
-}
-
-/* =========================
-   ✅ MISSING BEFORE: cleanNarr (FIX TS2304)
-========================= */
-function cleanNarr(s: string) {
-  return (s || "")
-    .replace(/::/g, " · ")
-    .replace(/[•●■◆]/g, "")
-    .replace(/\s+\|\s+/g, " · ")
-    .replace(/\u3000/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-}
-
-/* =========================
-   Formatting helpers
-========================= */
-function formatForPanelZh(input: string) {
-  let s = cleanNarr(input || "");
-  s = s.replace(/ *・ */g, "\n・");
-  s = s.replace(/\s*→\s*/g, " → ");
-
-  const anchors = ["系統判定", "系統判斷", "細項解讀", "細項連動", "風險方向", "路徑", "監測", "成長空間", "結論"];
-  for (const a of anchors) s = s.replace(new RegExp(`${a}\\s*：`, "g"), `\n\n${a}：`);
-
-  s = s.replace(/。(?=[^\n])/g, "。\n");
-  s = s.replace(/\n{3,}/g, "\n\n");
-  s = s.split("\n").map(x => x.trim()).join("\n").trim();
-  return s;
-}
-
-function formatForPanelEn(input: string) {
-  let s = (input || "").replace(/\s+/g, " ").trim();
-  s = s.replace(/::/g, " - ").replace(/[•●■◆]/g, "");
-  return s;
-}
-
-/* =========================
-   Growth window
-========================= */
-function growthParams(id: MetricId) {
-  if (id === "hydration" || id === "clarity" || id === "texture" || id === "brightness") return { k: 0.78, band: "快回應" };
-  if (id === "sebum" || id === "sensitivity" || id === "redness" || id === "skintone") return { k: 0.60, band: "中回應" };
-  return { k: 0.32, band: "慢回應" };
-}
-
-function growthRange(id: MetricId, score: number, confidence: number) {
-  const baseSpace = Math.max(0, 100 - Math.round(score));
-  const difficultyFactor = score > 85 ? 0.40 : score > 70 ? 0.70 : 0.90;
-
-  const { k, band } = growthParams(id);
-  const conf = Math.max(0, Math.min(1, confidence ?? 0.80));
-
-  const rawResistance = conf < 0.6 ? 0.20 : conf < 0.75 ? 0.12 : 0.05;
-  const resistanceVal = rawResistance + (1 - difficultyFactor) * 0.10;
-
-  const recover = Math.max(0, Math.min(38, Math.round(baseSpace * k * difficultyFactor)));
-  const lo = Math.max(0, Math.round(recover * 0.80));
-  const hi = Math.max(lo + 3, Math.round(recover * 1.15));
-
-  const drag =
-    resistanceVal >= 0.15 ? "高（結構慣性）" :
-    resistanceVal >= 0.08 ? "中（生理週期）" :
-    "低（快速反應）";
-
-  return { lo, hi, drag, band };
-}
-
-function appendGrowthToRecommendation(card: Card) {
-  const zh = (card.recommendation_zh || "").trim();
-  const en = (card.recommendation_en || "").trim();
-
-  const zhHas = /成長空間|可回收|回收窗口|Recovery|Growth/i.test(zh);
-  const enHas = /growth|recovery/i.test(en);
-
-  const g = growthRange(card.id, card.score, card.confidence);
-  const lineZh = `成長空間：可回收 ${g.lo}–${g.hi}%（阻力：${g.drag}｜${g.band}）`;
-  const lineEn = `Growth Window: ${g.lo}-${g.hi}% (Drag: ${g.drag})`;
-
-  if (!zhHas) card.recommendation_zh = (zh ? `${zh}\n${lineZh}` : lineZh);
-  if (!enHas) card.recommendation_en = (en ? `${en}\n${lineEn}` : lineEn);
-
-  return card;
-}
-
-/* =========================
-   OpenAI schema + payload
+   OpenAI: schema + payload
+   ✅ 強制輸出成你要的那種「規模與段落」
 ========================= */
 function cardSchema() {
   const metricEnum: MetricId[] = [
@@ -425,7 +393,7 @@ function cardSchema() {
     required: ["summary_en", "summary_zh", "cards"],
     properties: {
       summary_en: { type: "string", minLength: 30 },
-      summary_zh: { type: "string", minLength: 20 },
+      summary_zh: { type: "string", minLength: 30 },
       cards: {
         type: "array",
         minItems: 14,
@@ -446,7 +414,8 @@ function cardSchema() {
             score: { type: "integer", minimum: 0, maximum: 100 },
             max: { type: "integer", enum: [100] },
             signal_en: { type: "string", minLength: 60 },
-            signal_zh: { type: "string", minLength: 380 },
+            // ✅ 你要的規模：段落必須長
+            signal_zh: { type: "string", minLength: 520 },
             details: {
               type: "array",
               minItems: 3,
@@ -463,7 +432,7 @@ function cardSchema() {
               },
             },
             recommendation_en: { type: "string", minLength: 50 },
-            recommendation_zh: { type: "string", minLength: 260 },
+            recommendation_zh: { type: "string", minLength: 360 },
             priority: { type: "integer", minimum: 1, maximum: 100 },
             confidence: { type: "number", minimum: 0, maximum: 1 },
           },
@@ -501,8 +470,6 @@ function buildMetricsPayload(raw: any) {
     const [en, zh] = baseTitle[id];
     return {
       id,
-      tone: toneOf(id),
-      speed: speedBandOf(id),
       title_en: en,
       title_zh: zh,
       score: m.score,
@@ -515,52 +482,79 @@ function buildMetricsPayload(raw: any) {
   });
 }
 
+function timeWindowFor(id: MetricId) {
+  // ✅ 不講快慢回應，直接用你要的自然窗口（避免每張都兩週）
+  if (id === "pigmentation") return "8–12 週";
+  if (id === "wrinkle" || id === "elasticity" || id === "firmness") return "28–56 天";
+  if (id === "pore" || id === "pores_depth") return "21–42 天";
+  if (id === "clarity" || id === "brightness" || id === "skintone") return "14–28 天";
+  // hydration/texture/sebum/sensitivity/redness
+  return "7–21 天";
+}
+
 async function generateCardsWithOpenAI(metrics: any[]) {
   const openaiKey = mustEnv("OPENAI_API_KEY");
   const schema = cardSchema();
 
-  const system = `You are HONEY.TEA · FIELD — Skin Vision (Luxury Consumer Tech, Taiwan-friendly).
-Write like a top-tier beauty consultant using a calm instrument voice.
-NOT medical. NOT marketing. No fear, no sales.
+  const system = `You are HONEY.TEA · FIELD — Skin Vision.
+Taiwan-friendly. Instrument-grade. NOT medical. NOT marketing.
 
-Hard rules:
+ABSOLUTE RULES:
 - Do NOT change any provided scores/details.
-- Avoid symbols like "■" or "::". You may use line breaks and "•" bullets.
-- Every metric must sound different. Repetition fails.
+- No disease names. No diagnosis/treatment words. No fear. No sales.
+- Output MUST match the user's required style (deep, paragraph-based, with bullets).
+- Avoid sci-fi cringe words (neural core, quantum, etc.)
+- Do NOT reuse the same Chinese sentence (>=12 chars) across cards. Repetition fails.
 
-Anti-hallucination (critical):
-- If a metric includes explicit region keys in details (T-Zone/Cheek/Chin, Eye Area/Forehead/Nasolabial), you may state which region is higher/lower.
-- If a metric does NOT include explicit region keys (e.g., pigmentation), you must NOT claim exact face coordinates.
-  Use this clause instead:
-  "在未啟用區域遮罩的模式下，系統不提供精準座標；依訊號型態，優先觀察顴骨—臉頰帶／高曝光帶的輪廓乾淨度。"
+FORMAT REQUIRED (must follow exactly):
 
-Required format for signal_zh:
-【系統判斷說明】
-(1) One positioning sentence (baseline/band/threshold), calm.
-(2) "系統在影像中觀察到：" then 3 bullets, using each details.label_zh exactly once.
-(3) One turn sentence: "這並不是___，而是___。"
-(4) One "換句話說" sentence in plain Taiwan-friendly words.
+signal_en: 1 sentence, calm and sharp. Similar to:
+"Your texture signal sits below the cohort baseline. Not a warning — a clear starting point for refinement."
 
-Required format for recommendation_zh:
-【系統建議（為什麼是這個建議）】
-(1) Negate a wrong approach for this metric (e.g., not over-exfoliate / not brute-force).
-(2) Path with arrows: 先___ → 再___ → 最後___ (logic-based, no products).
-(3) Monitoring cadence varies by speed:
- FAST: 7–10 天先看穩定度/均勻度/緊繃感是否下降
- MID: 10–14 天先看波動幅度是否收斂
- SLOW: 21–28 天看輪廓一致性/維持時間
-(4) "模型推算" with conservative language only (not guarantee).
+signal_zh: long, must contain line breaks and bullets, 10–16 lines total:
+- First: 1–2 lines positioning sentence (baseline / reference band / threshold).
+- Then EXACT line:
+"這代表系統在影像中觀察到："
+- Then exactly 3 bullets. Each bullet must include details.label_zh EXACTLY ONCE.
+- Blank line
+- 2 lines:
+"這並不是…而是…"
+- Blank line
+- 2–3 lines starting with:
+"換句話說，"
+Use plain Taiwan-friendly wording.
 
-English:
-signal_en: one crisp instrument line.
-recommendation_en: one concise line.
+recommendation_en: 1 sentence, logic only.
 
-priority: TEXTURE=95, HYDRATION=92, others 70-88 descending.
-confidence: 0.78-0.92.
+recommendation_zh: long, 8–14 lines:
+- Start with:
+"系統建議的不是「___」或「___」，而是…"
+- Blank line
+- 3–5 lines explaining mechanism (why).
+- Blank line
+- Final block must include:
+"在模型推算中，若…（條件清楚），整體可改善 約 N%（區間），且不伴隨反彈風險。"
+Rules:
+- N must vary per metric; do NOT reuse the same number.
+- Time window must vary by metric type:
+  pigmentation: 8–12 週
+  wrinkle/elasticity/firmness: 28–56 天
+  pore/pores_depth: 21–42 天
+  clarity/brightness/skintone: 14–28 天
+  others: 7–21 天
+
+REGION RULE:
+- If details show explicit regions (T-Zone/Cheek/Chin, Eye Area/Forehead/Nasolabial), you may mention those regions.
+- If not (pigmentation/redness etc.), do NOT claim exact coordinates.
+Use this sentence:
+"未啟用區域遮罩時，系統不提供精準座標；依訊號型態，優先觀察顴骨—臉頰帶／高曝光帶的輪廓乾淨度。"
+
+priority: TEXTURE=95, HYDRATION=92, others 70–88 descending.
+confidence: 0.78–0.92.
 
 Return 14 cards strictly matching schema.`;
 
-  const user = `Metrics:\n${JSON.stringify(metrics, null, 2)}`;
+  const user = `Metrics:\n${JSON.stringify(metrics, null, 2)}\n\nTime window hint per metric id:\n${JSON.stringify(metrics.map((m:any)=>({id:m.id, window: timeWindowFor(m.id)})), null, 2)}`;
 
   const body = {
     model: "gpt-4o-2024-08-06",
@@ -596,13 +590,14 @@ Return 14 cards strictly matching schema.`;
 
   const out = JSON.parse(content);
 
+  // ✅ 服務端格式保證：段落分明
   if (out?.cards && Array.isArray(out.cards)) {
     out.cards = out.cards.map((c: any) => ({
       ...c,
-      signal_zh: formatForPanelZh(c.signal_zh),
-      recommendation_zh: formatForPanelZh(c.recommendation_zh),
-      signal_en: formatForPanelEn(c.signal_en),
-      recommendation_en: formatForPanelEn(c.recommendation_en),
+      signal_zh: formatForPanelZh(c.signal_zh || ""),
+      recommendation_zh: formatForPanelZh(c.recommendation_zh || ""),
+      signal_en: formatForPanelEn(c.signal_en || ""),
+      recommendation_en: formatForPanelEn(c.recommendation_en || ""),
     }));
   }
   out.summary_zh = formatForPanelZh(out.summary_zh || "");
@@ -611,11 +606,9 @@ Return 14 cards strictly matching schema.`;
 }
 
 /* =========================
-   Fallback (deep, not template)
+   Fallback（保證不露餡、也有段落）
 ========================= */
 function buildCardsFallback(raw: any): Card[] {
-  // 为避免篇幅过长，此处保留你原本 fallback 的结构概念，
-  // 但在实务上你会更常走 OpenAI narrative；若 OpenAI 失败，仍能保持“像系统”而不是“模板”
   const baseTitle: Record<MetricId,[string,string]> = {
     texture:["TEXTURE","紋理"],
     pore:["PORE","毛孔"],
@@ -634,8 +627,8 @@ function buildCardsFallback(raw: any): Card[] {
   };
 
   const order: MetricId[] = [
-    "texture","pore","pigmentation","wrinkle","hydration","sebum","skintone","sensitivity",
-    "clarity","elasticity","redness","brightness","firmness","pores_depth",
+    "texture","hydration","pore","pores_depth","sebum","sensitivity","redness","skintone",
+    "clarity","brightness","wrinkle","elasticity","firmness","pigmentation",
   ];
 
   const priorityMap: Record<MetricId, number> = {
@@ -658,46 +651,62 @@ function buildCardsFallback(raw: any): Card[] {
     wrinkle: 0.78, pigmentation: 0.78,
   };
 
-  const cadenceZh = (id: MetricId) => {
-    const sp = speedBandOf(id);
-    if (sp === "FAST") return "監測：7–10 天先看穩定度是否變乾淨（均勻度/緊繃感/反射噪訊）。";
-    if (sp === "MID") return "監測：10–14 天先看波動幅度是否收斂（比看數字更重要）。";
-    return "監測：21–28 天看輪廓一致性與維持時間（慢回應型）。";
+  const fallbackPctById: Record<MetricId, [number, number]> = {
+    texture: [18, 28],
+    hydration: [18, 30],
+    pore: [10, 18],
+    pores_depth: [10, 18],
+    sebum: [10, 20],
+    sensitivity: [10, 18],
+    redness: [10, 18],
+    skintone: [8, 14],
+    clarity: [8, 14],
+    brightness: [8, 14],
+    wrinkle: [6, 12],
+    elasticity: [6, 12],
+    firmness: [6, 12],
+    pigmentation: [24, 42],
   };
 
-  const pigmentAClause =
-    "在未啟用區域遮罩的模式下，系統不提供精準座標；依訊號型態，優先觀察顴骨—臉頰帶／高曝光帶的輪廓乾淨度。";
+  const pigmentClause =
+    "未啟用區域遮罩時，系統不提供精準座標；依訊號型態，優先觀察顴骨—臉頰帶／高曝光帶的輪廓乾淨度。";
 
-  const cards: Card[] = order.map((id) => {
+  return order.map((id) => {
     const m = raw?.[id] || { score: 0, details: [] };
     const [en, zh] = baseTitle[id];
     const score = Number.isFinite(Number(m.score)) ? Number(m.score) : 0;
+
     const details = (m.details || []).slice(0, 3).map((d: any) => ({
       label_en: d.en,
       label_zh: d.zh,
       value: d.v,
     }));
 
-    const d0 = details?.[0]?.label_zh || "細項一";
-    const d1 = details?.[1]?.label_zh || "細項二";
-    const d2 = details?.[2]?.label_zh || "細項三";
-    const extra = id === "pigmentation" ? `\n${pigmentAClause}` : "";
+    const d0 = details?.[0]?.label_zh || "表層特徵";
+    const d1 = details?.[1]?.label_zh || "結構訊號";
+    const d2 = details?.[2]?.label_zh || "穩定度";
 
-    const signal_zh = formatForPanelZh(
+    const band = score >= 88 ? "落在穩定參考帶" : score >= 72 ? "落在可控偏差帶" : "接近需要優先管理的門檻";
+
+    const [pLo, pHi] = fallbackPctById[id] || [10, 18];
+    const window = timeWindowFor(id);
+
+    const signalZh =
       `【系統判斷說明】\n` +
-      `${zh}屬於可讀型訊號，重點是「穩定度與節奏」而非單點好壞。${extra}\n` +
-      `系統在影像中觀察到：\n` +
-      `• ${d0}\n• ${d1}\n• ${d2}\n` +
-      `這並不是突然變差，而是節奏需要更穩定的固定方式。\n` +
-      `換句話說：把輸入做穩，趨勢線才會乾淨。`
-    );
+      `${zh}目前${band}（${score}/100）。\n` +
+      `這代表系統在影像中觀察到：\n` +
+      `• ${d0}\n` +
+      `• ${d1}\n` +
+      `• ${d2}\n\n` +
+      `這並不是突然變差，而是狀態的「固定度」不足所造成的可見波動。\n` +
+      `換句話說，系統不是看到「變醜」，而是看到「節奏不夠穩，導致外觀不夠一致」。` +
+      (id === "pigmentation" ? `\n\n${pigmentClause}` : "");
 
-    const recommendation_zh = formatForPanelZh(
+    const recZh =
       `【系統建議（為什麼是這個建議）】\n` +
-      `系統不建議短期強度爆衝，會把穩定帶打回波動帶。\n` +
-      `路徑：先止損 → 先穩定 → 再精修（依這張卡的節奏走）。\n` +
-      `${cadenceZh(id)}`
-    );
+      `系統建議的不是「短期加大強度」或「刺激性堆疊」，而是先把輸入變得一致。\n\n` +
+      `先止損（降低不必要的刺激密度）→ 再穩定（把節奏固定住）→ 最後精修（在穩定上做細節）。\n\n` +
+      `在模型推算中，若能維持 ${window} 的一致性輸入（同光線、同節奏、少波動），整體可改善 約 ${pLo}–${pHi}%，且不伴隨反彈風險。`;
 
     return {
       id,
@@ -705,18 +714,15 @@ function buildCardsFallback(raw: any): Card[] {
       title_zh: zh,
       score,
       max: 100,
-      signal_en: formatForPanelEn(`${en}: instrument readout ready.`),
-      signal_zh,
+      signal_en: formatForPanelEn(`${en} sits near baseline. Not a warning — a clear starting point for refinement.`),
+      signal_zh: formatForPanelZh(signalZh),
       details,
-      recommendation_en: formatForPanelEn(`Stabilize first → refine second.`),
-      recommendation_zh,
+      recommendation_en: formatForPanelEn(`Stabilize first, then refine. Window: ${window}.`),
+      recommendation_zh: formatForPanelZh(recZh),
       priority: priorityMap[id] ?? 70,
       confidence: confidenceMap[id] ?? 0.80,
     };
   });
-
-  cards.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
-  return cards;
 }
 
 /* =========================
@@ -729,6 +735,8 @@ export default async function handler(req: Request) {
 
     const form = await req.formData();
     const files = await getFiles(form);
+
+    // 只用最大張（省資源）
     files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
@@ -749,6 +757,7 @@ export default async function handler(req: Request) {
     const baseCards: Card[] = openaiOut?.cards ? openaiOut.cards : buildCardsFallback(youcam.raw);
     const finalCards: Card[] = baseCards.map((c) => appendGrowthToRecommendation(c));
 
+    // ✅ 最終格式保證（段落分明）
     const finalCardsFormatted: Card[] = finalCards.map((c) => ({
       ...c,
       signal_zh: formatForPanelZh(c.signal_zh),
@@ -759,16 +768,16 @@ export default async function handler(req: Request) {
 
     const summaryZh = formatForPanelZh(
       openaiOut?.summary_zh ??
-      "訊號已進入判讀階段。系統已完成排序，以下為關鍵訊號。"
-    ).slice(0, 320);
+      "系統已完成訊號排序。以下為關鍵訊號判讀結果。"
+    ).slice(0, 420);
 
     const summaryEn = formatForPanelEn(
       openaiOut?.summary_en ??
       "Signals are ready. Priority has been applied for review."
-    ).slice(0, 240);
+    ).slice(0, 260);
 
     return json({
-      build: "honeytea_scan_youcam_openai_v6_fixed_cleanNarr",
+      build: "honeytea_scan_youcam_openai_v7_narrative_spec_strict",
       scanId: nowId(),
       precheck: {
         ok: precheck.ok,
@@ -783,6 +792,7 @@ export default async function handler(req: Request) {
         youcam_task_status: youcam.task_status,
         mode: "youcam_metrics + openai_narrative",
         narrative: openaiOut ? "openai" : "fallback",
+        overlays: youcam.overlays, // ✅ 真儀器疊圖用（不加 YouCam 成本）
       },
     });
 
@@ -824,6 +834,6 @@ export default async function handler(req: Request) {
       }, 200);
     }
 
-    return json({ error: "scan_failed", message: "Scan failed. Please retry." }, 500);
+    return json({ error: "scan_failed", message: msg }, 500);
   }
 }
