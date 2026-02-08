@@ -814,44 +814,9 @@ export default async function handler(req: Request) {
       },
     });
 
-  } catch (e: any) {
+   } catch (e: any) {
     const msg = e?.message ?? String(e);
-
-    if (msg.includes("error_src_face_too_small")) {
-      return json({
-        error: "scan_retake",
-        code: "error_src_face_too_small",
-        tips: [
-          "距離太遠：臉部請佔畫面約 60–80%。",
-          "保持正面置中，避免側臉或低頭。",
-          "額頭與眼周需清晰可見（瀏海請撥開）。",
-          "使用均勻柔光，避免背光。",
-        ],
-      }, 200);
-    }
-
-    if (msg.includes("error_lighting_dark")) {
-      return json({
-        error: "scan_retake",
-        code: "error_lighting_dark",
-        tips: [
-          "光線不足：請面向窗戶或補柔光。",
-          "避免背光與局部強反光（額頭/鼻翼）。",
-        ],
-      }, 200);
-    }
-
-    if (msg.includes("error_src_face_out_of_bound")) {
-      return json({
-        error: "scan_retake",
-        code: "error_src_face_out_of_bound",
-        tips: [
-          "超出框位：請回到畫面中心。",
-          "保持頭部穩定，避免左右快速移動。",
-        ],
-      }, 200);
-    }
-
+    ...
     return json({ error: "scan_failed", message: msg }, 500);
   }
 }
