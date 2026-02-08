@@ -736,16 +736,17 @@ ${m.growth_zh}`
 }
 
 /* =========================
-   Handler
+   Handler (FINAL / CLEAN)
 ========================= */
 export default async function handler(req: Request) {
   try {
     if (req.method === "OPTIONS") return json({}, 200);
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+    if (req.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
+    }
 
     const form = await req.formData();
     const files = await getFiles(form);
-
     files.sort((a, b) => b.size - a.size);
     const primaryFile = files[0];
 
@@ -763,12 +764,10 @@ export default async function handler(req: Request) {
       openaiOut = null;
     }
 
-    // Use OpenAI or fallback
     const cards: Card[] = openaiOut?.cards
       ? openaiOut.cards
       : buildCardsFallback(metricsPayload);
 
-    // Ensure paragraph formatting + inject cadence/growth if missing
     const finalCards: Card[] = cards.map((c) => {
       const payload = metricsPayload.find((m: any) => m.id === c.id);
       const cadence = payload?.cadence_zh || cadenceById(c.id);
@@ -792,17 +791,18 @@ export default async function handler(req: Request) {
       };
     });
 
-    const summaryZh = formatZhPanel(openaiOut?.summary_zh ?? "系統已將主要訊號依優先順序整理。").slice(0, 420);
-    const summaryEn = formatEnPanel(openaiOut?.summary_en ?? "Primary signals have been ordered for review.").slice(0, 260);
+    const summaryZh = formatZhPanel(
+      openaiOut?.summary_zh ?? "系統已將主要訊號依優先順序整理。"
+    ).slice(0, 420);
+
+    const summaryEn = formatEnPanel(
+      openaiOut?.summary_en ?? "Primary signals have been ordered for review."
+    ).slice(0, 260);
 
     return json({
       build: "honeytea_scan_youcam_openai_final_user_spec",
       scanId: nowId(),
-      precheck: {
-        ok: precheck.ok,
-        warnings: precheck.warnings,
-        tips: precheck.tips,
-      },
+      precheck,
       cards: finalCards,
       summary_en: summaryEn,
       summary_zh: summaryZh,
@@ -810,16 +810,54 @@ export default async function handler(req: Request) {
         youcam_task_id: youcam.taskId,
         youcam_task_status: youcam.task_status,
         narrative: openaiOut ? "openai" : "fallback",
-        overlays: youcam.overlays, // ✅ 有就帶，沒有就 null
+        overlays: youcam.overlays,
       },
     });
 
-   } catch (e: any) {
+  } catch (e: any) {
     const msg = e?.message ?? String(e);
-    ...
+
+    if (msg.includes("error_src_face_too_small")) {
+      return json(
+        {
+          error: "scan_retake",
+          tips: [
+            "距離太遠：臉部請佔畫面約 60–80%。",
+            "保持正面置中，避免側臉或低頭。",
+            "額頭與眼周需清晰可見（瀏海請撥開）。",
+            "使用均勻柔光，避免背光。",
+          ],
+        },
+        200
+      );
+    }
+
+    if (msg.includes("error_lighting_dark")) {
+      return json(
+        {
+          error: "scan_retake",
+          tips: [
+            "光線不足：請面向窗戶或補柔光。",
+            "避免背光與局部強反光（額頭/鼻翼）。",
+          ],
+        },
+        200
+      );
+    }
+
+    if (msg.includes("error_src_face_out_of_bound")) {
+      return json(
+        {
+          error: "scan_retake",
+          tips: [
+            "超出框位：請回到畫面中心。",
+            "保持頭部穩定，避免左右快速移動。",
+          ],
+        },
+        200
+      );
+    }
+
     return json({ error: "scan_failed", message: msg }, 500);
-  }
-}
-n({ error: "scan_failed", message: msg }, 500);
   }
 }
