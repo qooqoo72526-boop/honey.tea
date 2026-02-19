@@ -8,6 +8,8 @@ type MetricId =
   | "hydration" | "sebum" | "skintone" | "sensitivity"
   | "clarity" | "elasticity" | "redness" | "brightness" | "firmness" | "pores_depth";
 
+type Tone = "stable" | "deviation" | "threshold";
+
 type Card = {
   id: string;
   title_en: string;
@@ -23,8 +25,6 @@ type Card = {
   confidence: number;
   masks?: string[];
 };
-
-type Tone = "stable" | "deviation" | "threshold";
 
 type ReportSignal = {
   id: MetricId;
@@ -60,6 +60,12 @@ type Report = {
   precheck?: { passed: boolean; warnings: string[]; tips: string[] };
   signals14: ReportSignal[];
   dimensions8: ReportDimension[];
+  // ✅ 新增：決策層（前端可選擇顯示；不影響舊版）
+  environment_zh?: string;
+  decision_zh?: string;
+  priority_node_zh?: string;
+  constraints_zh?: string[];
+  timeline_zh?: string[];
 };
 
 function json(data: any, status = 200) {
@@ -75,7 +81,9 @@ function json(data: any, status = 200) {
   });
 }
 
-function nowId() { return `scan_${Date.now()}`; }
+function nowId() {
+  return `scan_${Date.now()}`;
+}
 
 const YOUCAM_API_KEY = process.env.YOUCAM_API_KEY;
 
@@ -100,6 +108,18 @@ async function toBytes(f: File) {
   return new Uint8Array(buf);
 }
 
+function clampScore(x: any) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function toneForScore(score: number): Tone {
+  if (score >= 88) return "stable";
+  if (score >= 72) return "deviation";
+  return "threshold";
+}
+
 function quickPrecheck(bytes: Uint8Array) {
   const sizeKB = bytes.length / 1024;
   const warnings: string[] = [];
@@ -120,16 +140,51 @@ function quickPrecheck(bytes: Uint8Array) {
   return { ok: warnings.length === 0, avgSignal: avg, warnings, tips };
 }
 
-function clampScore(x: any) {
-  const n = Number(x);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(100, Math.round(n)));
-}
+/* =========================
+   ✅ Edge 內建重編碼：補到最低尺寸再送 YouCam
+   - 目的：避免 error_below_min_image_size
+   - 不改你相機 UI，只改送去分析的影像規格
+========================= */
+async function normalizeForYouCam(input: File, opts?: { minSide?: number; maxSide?: number; quality?: number }) {
+  const minSide = opts?.minSide ?? 720;   // ✅ 保守：至少 720
+  const maxSide = opts?.maxSide ?? 1440;  // ✅ 不要太大，避免慢
+  const quality = opts?.quality ?? 0.92;
 
-function toneForScore(score: number): Tone {
-  if (score >= 88) return "stable";
-  if (score >= 72) return "deviation";
-  return "threshold";
+  const arr = await input.arrayBuffer();
+  const blob = new Blob([arr], { type: input.type || "image/jpeg" });
+
+  // createImageBitmap 在 Edge (Web APIs) 可用；若環境不支援會 throw → 我們 fallback 回原檔
+  const bmp = await createImageBitmap(blob);
+
+  const w = bmp.width;
+  const h = bmp.height;
+
+  // 先算 scale：先補到 minSide，再限制 maxSide
+  const short = Math.min(w, h);
+  const long = Math.max(w, h);
+
+  let scale = 1;
+  if (short < minSide) scale = minSide / short;
+  if (long * scale > maxSide) scale = maxSide / long;
+
+  const outW = Math.max(1, Math.round(w * scale));
+  const outH = Math.max(1, Math.round(h * scale));
+
+  // OffscreenCanvas
+  const canvas = new OffscreenCanvas(outW, outH);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas not supported");
+
+  ctx.drawImage(bmp, 0, 0, outW, outH);
+
+  const outBlob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+  const outBuf = await outBlob.arrayBuffer();
+  return {
+    bytes: new Uint8Array(outBuf),
+    contentType: "image/jpeg",
+    width: outW,
+    height: outH,
+  };
 }
 
 /* =========================
@@ -140,6 +195,7 @@ const YOUCAM_FILE_ENDPOINT = `${YOUCAM_BASE}/file/skin-analysis`;
 const YOUCAM_TASK_CREATE = `${YOUCAM_BASE}/task/skin-analysis`;
 const YOUCAM_TASK_GET = (taskId: string) => `${YOUCAM_BASE}/task/skin-analysis/${taskId}`;
 
+// ✅ 只留你報告用得到的 actions（穩）
 const YOUCAM_HD_ACTIONS = [
   "hd_moisture",
   "hd_age_spot",
@@ -153,11 +209,11 @@ const YOUCAM_HD_ACTIONS = [
   "hd_acne",
 ];
 
-async function youcamInitUpload(fileBytes: Uint8Array, fileType: string, fileName: string) {
+async function youcamInitUpload(fileBytes: Uint8Array, fileName: string) {
   const apiKey = must(YOUCAM_API_KEY, "YOUCAM_API_KEY");
   const payload = {
     files: [{
-      content_type: fileType || "image/jpeg",
+      content_type: "image/jpeg",
       file_name: fileName || `skin_${Date.now()}.jpg`,
       file_size: fileBytes.length,
     }],
@@ -244,7 +300,7 @@ function extractYoucamScores(j: any) {
 }
 
 /* =========================
-   MAP YouCam → 8 cards
+   MAP YouCam → 8 cards（分數為真；敘事為冷靜推演）
 ========================= */
 function mapYoucamToCards(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>) {
   const get = (k: string) => scoreMap.get(k);
@@ -433,7 +489,7 @@ function mapYoucamToCards(scoreMap: Map<string, { ui: number; raw: number; masks
 }
 
 /* =========================
-   14 signals
+   14 signals（可推演但數值用真資料＋衍生）
 ========================= */
 const SIGNAL_LABELS: Record<MetricId, { en: string; zh: string }> = {
   hydration: { en: "Hydration Stability", zh: "含水穩定" },
@@ -503,66 +559,147 @@ function buildSignals14(scoreMap: Map<string, { ui: number; raw: number; masks: 
 }
 
 /* =========================
-   ✅ 冷靜推演 + 決策層（全部中文）
-   只用你現有欄位：finding_zh / mechanism_zh / protocol_zh
+   ✅ 冷靜推演語氣：每個維度不同（不再複製貼上）
 ========================= */
-function buildDecisionNarrative(params: {
-  dimId: string;
-  dimZh: string;
-  score: number;
-  sensitivityLoad: number; // 來自 signals14 sensitivity
-  barrierScore: number;    // 來自 cards barrier
-  textureScore: number;    // 來自 cards texture
-}) {
-  const { score, sensitivityLoad, barrierScore, textureScore } = params;
+function zhFinding(dimId: string, score: number) {
+  const t = toneForScore(score);
+  const s = clampScore(score);
 
-  // 主風險/次漂移（依你的需求：每個都要有）
-  const primaryRisk =
-    barrierScore < 72 ? "屏障不穩定（Barrier Instability）"
-    : "結構波動（Barrier Micro-Instability）";
+  const level =
+    t === "stable" ? "穩定區" :
+    t === "deviation" ? "可控偏差帶" :
+    "接近門檻";
 
-  const secondaryDrift =
-    textureScore < 72 ? "紋理不規則（Texture Irregularity）"
-    : "紋理漂移（Texture Drift）";
+  const base = `視覺特徵顯示「${level}」(${s})，屬於可被策略化控制的波動型訊號。`;
 
-  // 約束條件：依敏感負載與屏障分數決定
-  const banAHA = true; // 先按你要求，所有報告都能帶到（專業一致性）
-  const retinolLowFreq = true;
-  const exfoliationGap = barrierScore < 72 ? "≥ 10 天" : "≥ 7 天";
+  const extraMap: Record<string, string> = {
+    hydration: "水分結構可能存在封存效率不足，表層與深層同步性偏弱。",
+    melanin: "色素呈區域差異，顴區/額區的濃度梯度可能更明顯。",
+    texture: "微紋理對比偏強，反射碎裂感上升，質感可能更粗。",
+    sebum: "油脂分佈偏區域化，T 區與臉頰輸出可能不對稱。",
+    pore: "毛孔可視度提升，孔道邊界的對比度可能偏高。",
+    elasticity: "回彈曲線偏慢，彈性回復可能受負載影響。",
+    radiance: "光澤偏漫反射，亮度被散射吸收的比例可能較高。",
+    barrier: "屏障連續性可能不足，刺激閾值有下降風險。",
+  };
 
-  const decisionNote =
+  return `${extraMap[dimId] || ""}\n${base}`.trim();
+}
+
+function zhMechanism(dimId: string, score: number) {
+  const s = clampScore(score);
+  const low = s < 72;
+
+  const map: Record<string, string> = {
+    hydration: low
+      ? "推演：角質層保水結構的封存效率偏低，日內波動可能更明顯。"
+      : "推演：保水結構可控，但封存與留存存在輕微落差。",
+    melanin: low
+      ? "推演：色素生成/轉移的局部累積可能更活躍，導致均勻性下降。"
+      : "推演：色素分佈整體可控，局部仍可能受光源/角度放大差異。",
+    texture: low
+      ? "推演：角質排列與黏著一致性不足，microrelief 造成散射提升。"
+      : "推演：紋理規則性尚可，局部微紋理仍可能造成反射破碎。",
+    sebum: low
+      ? "推演：皮脂輸出與脫水訊號交互，形成局部滯留與堵塞風險。"
+      : "推演：油脂輸出穩定，但區域差異仍可能影響孔道負載。",
+    pore: low
+      ? "推演：毛囊角化與皮脂滯留可能推高孔道可視度與邊界擴張。"
+      : "推演：孔道結構大致可控，仍需避免讓角栓負載持續累積。",
+    elasticity: low
+      ? "推演：回彈動態偏慢，可能與氧化/糖化負載及修復節奏相關。"
+      : "推演：彈性回復可用，建議以低刺激方式維持重塑節奏。",
+    radiance: low
+      ? "推演：表面散射（紋理）與微炎症訊號，可能拉低通透與亮度。"
+      : "推演：光澤可控，但散射與均勻性仍是主要影響因素。",
+    barrier: low
+      ? "推演：脂質矩陣連續性不足與 pH 漂移，可能降低耐受上限。"
+      : "推演：屏障可用，但仍需維持脂質連續性以避免裂縫風險。",
+  };
+
+  return map[dimId] || "推演：訊號來源可能與結構與波動交互相關。";
+}
+
+function zhProtocol(dimId: string, score: number): string[] {
+  const s = clampScore(score);
+  const low = s < 72;
+
+  const map: Record<string, [string, string]> = {
+    hydration: low
+      ? ["NMF：泛醇/胺基酸", "補脂：Ceramide 3:1:1"]
+      : ["封存：神經醯胺/脂肪酸", "節奏：夜間加強留存"],
+    melanin: low
+      ? ["抗氧鏈：Vit C + ferulic", "均勻路徑：B3/傳明酸"]
+      : ["防曬規格：廣譜穩定", "均勻節奏：低刺激長跑"],
+    texture: low
+      ? ["溫和更新：PHA/LHA", "結構支持：尿素/神經醯胺"]
+      : ["更新節奏：拉長間隔", "敏感期：避免過度摩擦"],
+    sebum: low
+      ? ["控油不破膜：Zinc PCA", "孔道清理：BHA 週2–3"]
+      : ["分區保養：T 區/臉頰分流", "負載控制：避免強清潔"],
+    pore: low
+      ? ["角化管理：BHA/視黃醇交替", "結構支撐：B3/胜肽"]
+      : ["清理節奏：低頻但持續", "支撐策略：B3/保水封存"],
+    elasticity: low
+      ? ["夜間重塑：視黃醇 2–3晚", "抗氧支援：胜肽/維E"]
+      : ["重塑維持：低頻A醇", "防護：抗氧 + 封存"],
+    radiance: low
+      ? ["抑炎抗氧：壬二酸/EGCG", "提亮鏈路：Vit C + 封存"]
+      : ["均光策略：抗氧 + 保水", "反射管理：紋理節奏"],
+    barrier: low
+      ? ["補脂修復：Ceramide/膽固醇/FA", "降刺激：停強酸/酒精香精"]
+      : ["維持連續：補脂 + 封存", "避免波動：降清潔強度"],
+  };
+
+  const p = map[dimId] || ["以低刺激為主", "維持節奏與追蹤"];
+  return [p[0], p[1]];
+}
+
+/* =========================
+   ✅ 決策層（只出現一次）
+========================= */
+function buildDecisionLayer(signals14: ReportSignal[], cards: Card[]) {
+  const sensitivity = signals14.find((s) => s.id === "sensitivity")?.score ?? 50;
+  const barrier = cards.find((c) => c.id === "barrier")?.score ?? 70;
+  const texture = cards.find((c) => c.id === "texture")?.score ?? 70;
+
+  const primary =
+    barrier < 72 ? "屏障不穩定（Barrier Instability）" : "屏障微波動（Barrier Micro-Instability）";
+  const secondary =
+    texture < 72 ? "紋理不規則（Texture Irregularity）" : "紋理漂移（Texture Drift）";
+
+  const constraints = [
+    "High % AHA：禁用",
+    "Retinol：降頻",
+    `去角質間隔：${barrier < 72 ? "≥ 10 天" : "≥ 7 天"}`,
+  ];
+
+  const timeline = [
+    "Week 1–2：穩定屏障",
+    "Week 3：低刺激更新",
+    "Week 4：微結構優化",
+  ];
+
+  const decision =
 `系統決策說明
-目前敏感負載較低（${clampScore(sensitivityLoad)}）
+目前敏感負載較低（${clampScore(sensitivity)}）
 為避免角質代謝過快導致刺激訊號放大，
 系統已暫時限制高濃度酸類與高頻煥膚行為。
 建議 14 天內以屏障穩定為主。`;
 
-  const priorityNode =
+  const node =
 `SYSTEM PRIORITY NODE
-Primary Risk: ${primaryRisk}
-Secondary Drift: ${secondaryDrift}
+Primary Risk: ${primary}
+Secondary Drift: ${secondary}`;
 
-Constraint Activated:
-• High % AHA：${banAHA ? "禁用" : "限制"}
-• Retinol：${retinolLowFreq ? "降頻" : "限制"}
-• 去角質間隔：${exfoliationGap}
-
-Strategy Timeline:
-Week 1–2：穩定屏障
-Week 3：低刺激更新
-Week 4：微結構優化`;
-
-  return { decisionNote, priorityNode };
-}
-
-/* =========================
-   ✅ ENVIRONMENT 声明（放到 summary_zh 下方）
-========================= */
-const ENV_BOUNDARY_ZH =
+  const environment =
 `ENVIRONMENT & INFERENCE BOUNDARY / 環境與推估邊界
 • 光源會影響色素與亮度的可視判讀
 • 角度/距離會影響毛孔可視度與紋理對比
 • 當前為單次影像推估，用於決策排序與行為約束（非醫療診斷）`;
+
+  return { environment, decision, node, constraints, timeline };
+}
 
 /* =========================
    MAIN HANDLER (Edge) — POST + GET
@@ -571,7 +708,7 @@ export default async function handler(req: Request) {
   try {
     if (req.method === "OPTIONS") return json({ ok: true }, 200);
 
-    // ✅ GET：查 task 狀態，success 才回「真的 report」
+    // ✅ GET：查 task 狀態，success 才回 report
     if (req.method === "GET") {
       const url = new URL(req.url);
       const taskId = url.searchParams.get("task_id");
@@ -584,61 +721,46 @@ export default async function handler(req: Request) {
       if (st === "success") {
         const scoreMap = extractYoucamScores(task);
         const cardsRaw = mapYoucamToCards(scoreMap);
-
         const signals14 = buildSignals14(scoreMap, cardsRaw);
 
-        // 拿幾個關鍵分數做「決策層」用
-        const sensitivityLoad = signals14.find(s => s.id === "sensitivity")?.score ?? 50;
-        const barrierScore = cardsRaw.find(c => c.id === "barrier")?.score ?? 70;
-        const textureScore = cardsRaw.find(c => c.id === "texture")?.score ?? 70;
+        // ✅ 決策層只出現一次
+        const decisionLayer = buildDecisionLayer(signals14, cardsRaw);
 
-        // 每張卡片都塞入「推演 + 決策層」
+        // ✅ 每張卡片：各自不同推演敘事（不重複整段決策）
         const cards: Card[] = cardsRaw.map((c) => {
-          const d = buildDecisionNarrative({
-            dimId: c.id,
-            dimZh: c.title_zh,
-            score: c.score,
-            sensitivityLoad,
-            barrierScore,
-            textureScore,
-          });
-
-          // ✅ 你要的格式：全部中文，冷靜語氣
-          const finding = `視覺特徵顯示「${c.title_zh}」對應結構可能存在可控偏差（${clampScore(c.score)}），需以決策約束控制波動。`;
-          const mech = `${d.decisionNote}\n\n${d.priorityNode}`;
-
+          const s = clampScore(c.score);
           return {
             ...c,
-            signal_zh: finding,
-            recommendation_zh: mech,
-            // 英文欄位留空（你說你看不懂英文）
+            signal_zh: zhFinding(c.id, s),
+            recommendation_zh: zhMechanism(c.id, s),
+            // 你說你看不懂英文 → 留空
             signal_en: "",
             recommendation_en: "",
           };
         });
 
-        // Report 的 8 維度用 cards 組（沿用你原 schema）
         const dimensions8: ReportDimension[] = cards
           .slice()
           .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
-          .map((c) => ({
-            id: c.id,
-            title_en: c.title_en,
-            title_zh: c.title_zh,
-            score: clampScore(c.score),
-            tone: toneForScore(clampScore(c.score)),
-            confidence: Number(c.confidence) || 0.78,
-            finding_en: "",
-            mechanism_en: "",
-            protocol_en: [],
-            finding_zh: c.signal_zh || "",
-            mechanism_zh: c.recommendation_zh || "",
-            protocol_zh: [
-              "High % AHA：禁用",
-              "去角質間隔：≥ 10 天",
-            ],
-            masks: c.masks,
-          }));
+          .map((c) => {
+            const s = clampScore(c.score);
+            const tone = toneForScore(s);
+            return {
+              id: c.id,
+              title_en: c.title_en,
+              title_zh: c.title_zh,
+              score: s,
+              tone,
+              confidence: Number(c.confidence) || 0.78,
+              finding_en: "",
+              mechanism_en: "",
+              protocol_en: [],
+              finding_zh: c.signal_zh || "",
+              mechanism_zh: c.recommendation_zh || "",
+              protocol_zh: zhProtocol(c.id, s),
+              masks: c.masks,
+            };
+          });
 
         const report: Report = {
           scan_id: scanId,
@@ -646,9 +768,15 @@ export default async function handler(req: Request) {
           degraded: false,
           stage: "youcam_success",
           summary_en: "",
-          summary_zh: `掃描完成：14 通道已整合為 8 維度決策報告。\n\n${ENV_BOUNDARY_ZH}`,
+          summary_zh: `掃描完成：14 通道已整合為 8 維度決策報告。`,
+          precheck: undefined,
           signals14,
           dimensions8,
+          environment_zh: decisionLayer.environment,
+          decision_zh: decisionLayer.decision,
+          priority_node_zh: decisionLayer.node,
+          constraints_zh: decisionLayer.constraints,
+          timeline_zh: decisionLayer.timeline,
         };
 
         return json({
@@ -659,17 +787,30 @@ export default async function handler(req: Request) {
           report,
           cards,
           summary_en: "",
-          summary_zh: report.summary_zh,
+          summary_zh: `${report.summary_zh}\n\n${report.environment_zh}`,
         }, 200);
       }
 
       if (st === "error") {
+        const errMsg = JSON.stringify(task?.data || {});
+        // ✅ YouCam 常見：below_min_image_size → 回 scan_retake（前端顯示重拍提示）
+        if (errMsg.includes("below_min_image_size")) {
+          return json({
+            error: "scan_retake",
+            stage: "youcam_error_below_min_image_size",
+            tips: [
+              "影像尺寸不足（系統已嘗試補足）。",
+              "請更靠近一點拍或改用更高解析度。",
+              "避免聊天軟體壓縮後再上傳。",
+            ],
+          }, 200);
+        }
         return json({
           scan_id: scanId,
           degraded: true,
           stage: "youcam_error",
           task_status: "error",
-          message: JSON.stringify(task?.data || {}),
+          message: errMsg,
         }, 200);
       }
 
@@ -682,7 +823,7 @@ export default async function handler(req: Request) {
       }, 200);
     }
 
-    // ✅ POST：只做「上傳 + 建立 task」→ 立刻回 task_id（不再等 22 秒）
+    // ✅ POST：上傳 + 建立 task → 立刻回 task_id
     if (req.method === "POST") {
       const scanId = nowId();
       if (!YOUCAM_API_KEY) {
@@ -691,13 +832,23 @@ export default async function handler(req: Request) {
 
       const form = await req.formData();
       const files = await getFiles(form);
-      const fileBytes = await toBytes(files[0]);
 
-      const check = quickPrecheck(fileBytes);
+      // 先做 precheck（給前端顯示）
+      const rawBytes = await toBytes(files[0]);
+      const check = quickPrecheck(rawBytes);
       const precheck = { passed: check.ok, warnings: check.warnings, tips: check.tips };
 
-      const { fileId, putUrl, contentType } = await youcamInitUpload(fileBytes, files[0].type, files[0].name);
-      await youcamPutBinary(putUrl, fileBytes, contentType);
+      // ✅ 送 YouCam 前：補到最低尺寸（關鍵）
+      let normalized: { bytes: Uint8Array; contentType: string; width: number; height: number };
+      try {
+        normalized = await normalizeForYouCam(files[0], { minSide: 720, maxSide: 1440, quality: 0.92 });
+      } catch {
+        // fallback：至少不要整個 fail
+        normalized = { bytes: rawBytes, contentType: files[0].type || "image/jpeg", width: 0, height: 0 };
+      }
+
+      const { fileId, putUrl, contentType } = await youcamInitUpload(normalized.bytes, `skin_${Date.now()}.jpg`);
+      await youcamPutBinary(putUrl, normalized.bytes, contentType);
 
       const taskId = await youcamCreateTask(fileId, YOUCAM_HD_ACTIONS);
 
@@ -708,6 +859,11 @@ export default async function handler(req: Request) {
         task_id: taskId,
         task_status: "processing",
         precheck,
+        normalized: {
+          width: normalized.width,
+          height: normalized.height,
+          bytes_kb: Math.round((normalized.bytes.length / 1024) * 10) / 10,
+        },
         summary_en: "",
         summary_zh: "任務已建立，等待分析輸出。",
       }, 200);
