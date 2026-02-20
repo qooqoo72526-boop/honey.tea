@@ -656,6 +656,127 @@ function zhProtocol(dimId: string, score: number): string[] {
 }
 
 /* =========================
+   ✅ LLM 個人化敘事（OpenAI）
+   失敗時 fallback 回靜態模板
+========================= */
+async function generateLLMNarratives(cardsRaw: Card[], signals14: ReportSignal[]) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const cardsSummary = cardsRaw.map(c =>
+      `【${c.title_zh}（${c.title_en}）】總分：${c.score}/100\n子指標：${c.details.map(d => `${d.label_zh}=${d.value}`).join('、')}`
+    ).join('\n\n');
+
+    const signalsSummary = signals14.map(s =>
+      `${s.label_zh}(${s.id}): ${s.score} [${s.tone}]`
+    ).join('、');
+
+    // 找出最差和最好的維度
+    const sorted = [...cardsRaw].sort((a, b) => a.score - b.score);
+    const worst = sorted.slice(0, 2).map(c => `${c.title_zh}(${c.score})`);
+    const best = sorted.slice(-2).map(c => `${c.title_zh}(${c.score})`);
+
+    const payload = {
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content: `你是台灣頂尖的皮膚科學分析系統。你的報告風格：
+
+【絕對禁止的用詞】診斷、治療、醫療、處方、疾病、病症、療程、患者、病患
+【正確的用語】系統判斷、訊號偵測、數據推演、策略建議、結構分析、行為約束
+
+每個維度的報告格式：
+1. finding_zh：系統判斷說明 + 細項數據解讀（150-250字）
+   - 必須引用具體數字（分數、子指標）
+   - 必須說明數字代表什麼意思
+   - 必須比較子指標之間的關係（例如：「T區出油 78 vs 臉頰 52，差距 26，顯示區域不對稱」）
+   - 跟其他維度的交叉影響要提到
+
+2. mechanism_zh：推演機制 + 策略建議（150-250字）
+   - 用「推演」開頭
+   - 說清楚可能的原因鏈
+   - 給出具體的保養策略，說清楚邏輯
+
+3. protocol_zh：2-3條具體策略建議
+
+重要原則：
+- 每個維度的敘事必須不同，不要複製貼上
+- 必須根據實際數字寫，不能用模板
+- 語氣專業但客人聽得懂
+- 像高端美容科技品牌的系統報告`
+        },
+        {
+          role: "user",
+          content: `以下是這位用戶的真實掃描數據：
+
+${cardsSummary}
+
+14 通道信號：${signalsSummary}
+
+特徵摘要：
+- 最弱維度：${worst.join('、')}
+- 最強維度：${best.join('、')}
+- 平均分數：${Math.round(cardsRaw.reduce((s, c) => s + c.score, 0) / cardsRaw.length)}
+
+請為每個維度生成專屬於這位用戶的報告。每個維度的敘事必須不同。`
+        }
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "narratives",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              dimensions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    finding_zh: { type: "string" },
+                    mechanism_zh: { type: "string" },
+                    protocol_zh: { type: "array", items: { type: "string" } }
+                  },
+                  required: ["id", "finding_zh", "mechanism_zh", "protocol_zh"],
+                  additionalProperties: false
+                }
+              },
+              summary_zh: { type: "string" }
+            },
+            required: ["dimensions", "summary_zh"],
+            additionalProperties: false
+          }
+        }
+      },
+      max_tokens: 8192,
+    };
+
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(payload),
+    });
+
+    if (!r.ok) {
+      console.error(`OpenAI error: ${r.status}`);
+      return null;
+    }
+
+    const j: any = await r.json();
+    const content = j?.choices?.[0]?.message?.content;
+    if (!content) return null;
+    return JSON.parse(content);
+  } catch (err) {
+    console.error("[LLM Narrative] fallback to static:", err);
+    return null;
+  }
+}
+
+/* =========================
    ✅ 決策層（只出現一次）
 ========================= */
 function buildDecisionLayer(signals14: ReportSignal[], cards: Card[]) {
@@ -726,14 +847,18 @@ export default async function handler(req: Request) {
         // ✅ 決策層只出現一次
         const decisionLayer = buildDecisionLayer(signals14, cardsRaw);
 
-        // ✅ 每張卡片：各自不同推演敘事（不重複整段決策）
+        // ✅ LLM 個人化敘事（失敗 fallback 回靜態）
+        const narratives = await generateLLMNarratives(cardsRaw, signals14);
+        const useLLM = narratives && Array.isArray(narratives.dimensions) && narratives.dimensions.length > 0;
+
+        // ✅ 每張卡片：LLM 個人化 or 靜態 fallback
         const cards: Card[] = cardsRaw.map((c) => {
           const s = clampScore(c.score);
+          const narrative = useLLM ? narratives.dimensions.find((n: any) => n.id === c.id) : null;
           return {
             ...c,
-            signal_zh: zhFinding(c.id, s),
-            recommendation_zh: zhMechanism(c.id, s),
-            // 你說你看不懂英文 → 留空
+            signal_zh: narrative?.finding_zh || zhFinding(c.id, s),
+            recommendation_zh: narrative?.mechanism_zh || zhMechanism(c.id, s),
             signal_en: "",
             recommendation_en: "",
           };
@@ -745,6 +870,7 @@ export default async function handler(req: Request) {
           .map((c) => {
             const s = clampScore(c.score);
             const tone = toneForScore(s);
+            const narrative = useLLM ? narratives.dimensions.find((n: any) => n.id === c.id) : null;
             return {
               id: c.id,
               title_en: c.title_en,
@@ -757,7 +883,7 @@ export default async function handler(req: Request) {
               protocol_en: [],
               finding_zh: c.signal_zh || "",
               mechanism_zh: c.recommendation_zh || "",
-              protocol_zh: zhProtocol(c.id, s),
+              protocol_zh: narrative?.protocol_zh || zhProtocol(c.id, s),
               masks: c.masks,
             };
           });
@@ -768,7 +894,9 @@ export default async function handler(req: Request) {
           degraded: false,
           stage: "youcam_success",
           summary_en: "",
-          summary_zh: `掃描完成：14 通道已整合為 8 維度決策報告。`,
+          summary_zh: useLLM && narratives.summary_zh
+            ? narratives.summary_zh
+            : `掃描完成：14 通道已整合為 8 維度決策報告。`,
           precheck: undefined,
           signals14,
           dimensions8,
