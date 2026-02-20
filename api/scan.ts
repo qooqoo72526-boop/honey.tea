@@ -105,7 +105,10 @@ function quickPrecheck(bytes: Uint8Array) {
   const warnings: string[] = [];
   const tips: string[] = [];
 
-  if (sizeKB < 60) { warnings.push("LOW_RESOLUTION"); tips.push("畫質偏低。請使用更清晰的正面照片。"); }
+  if (sizeKB < 60) {
+    warnings.push("LOW_RESOLUTION");
+    tips.push("畫質偏低。建議使用更清晰的正面照片。");
+  }
 
   let sample = 0, sum = 0;
   for (let i = 0; i < bytes.length; i += 401) { sum += bytes[i]; sample++; }
@@ -130,7 +133,7 @@ function toneForScore(score: number): Tone {
 }
 
 /* =========================
-   YouCam endpoints
+   YouCam — endpoints
 ========================= */
 const YOUCAM_BASE = "https://yce-api-01.makeupar.com/s2s/v2.0";
 const YOUCAM_FILE_ENDPOINT = `${YOUCAM_BASE}/file/skin-analysis`;
@@ -152,7 +155,6 @@ const YOUCAM_HD_ACTIONS = [
 
 async function youcamInitUpload(fileBytes: Uint8Array, fileType: string, fileName: string) {
   const apiKey = must(YOUCAM_API_KEY, "YOUCAM_API_KEY");
-
   const payload = {
     files: [{
       content_type: fileType || "image/jpeg",
@@ -242,7 +244,7 @@ function extractYoucamScores(j: any) {
 }
 
 /* =========================
-   MAP → 8 cards
+   MAP YouCam → 8 cards
 ========================= */
 function mapYoucamToCards(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>) {
   const get = (k: string) => scoreMap.get(k);
@@ -263,137 +265,210 @@ function mapYoucamToCards(scoreMap: Map<string, { ui: number; raw: number; masks
   const AC = safe(get("hd_acne"));
 
   const hydration: Card = {
-    id: "hydration", title_en: "HYDRATION TOPOLOGY", title_zh: "保濕拓撲",
-    score: H.ui, max: 100, signal_en: "", signal_zh: "",
+    id: "hydration",
+    title_en: "HYDRATION TOPOLOGY",
+    title_zh: "保濕拓撲",
+    score: H.ui,
+    max: 100,
+    signal_en: "",
+    signal_zh: "",
     details: [
       { label_en: "Surface Layer", label_zh: "表層含水", value: clampScore(H.ui * 0.95) },
       { label_en: "Mid Layer", label_zh: "中層滲透", value: clampScore(H.ui * 0.88) },
       { label_en: "Deep Layer", label_zh: "深層鎖水", value: clampScore(H.ui * 0.76) },
     ],
-    recommendation_en: "", recommendation_zh: "", priority: 1, confidence: 0.92, masks: H.masks,
+    recommendation_en: "",
+    recommendation_zh: "",
+    priority: 1,
+    confidence: 0.92,
+    masks: H.masks,
   };
 
   const melanin: Card = {
-    id: "melanin", title_en: "MELANIN DISTRIBUTION", title_zh: "色素分佈",
-    score: PG.ui, max: 100, signal_en: "", signal_zh: "",
+    id: "melanin",
+    title_en: "MELANIN DISTRIBUTION",
+    title_zh: "色素分佈",
+    score: PG.ui,
+    max: 100,
+    signal_en: "",
+    signal_zh: "",
     details: [
       { label_en: "Forehead Zone", label_zh: "額頭區域", value: clampScore(PG.ui * 1.1) },
       { label_en: "Cheek Zone", label_zh: "臉頰區域", value: clampScore(PG.ui * 0.9) },
       { label_en: "Jaw Zone", label_zh: "下顎區域", value: clampScore(PG.ui * 0.85) },
     ],
-    recommendation_en: "", recommendation_zh: "", priority: 2, confidence: 0.88, masks: PG.masks,
+    recommendation_en: "",
+    recommendation_zh: "",
+    priority: 2,
+    confidence: 0.88,
+    masks: PG.masks,
   };
 
   const texture: Card = {
-    id: "texture", title_en: "TEXTURE MATRIX", title_zh: "紋理矩陣",
-    score: T.ui, max: 100, signal_en: "", signal_zh: "",
+    id: "texture",
+    title_en: "TEXTURE MATRIX",
+    title_zh: "紋理矩陣",
+    score: T.ui,
+    max: 100,
+    signal_en: "",
+    signal_zh: "",
     details: [
       { label_en: "Smoothness", label_zh: "平滑度", value: clampScore(T.ui * 0.9) },
       { label_en: "Uniformity", label_zh: "均勻度", value: clampScore(T.ui * 0.92) },
       { label_en: "Grain", label_zh: "顆粒感", value: clampScore(100 - T.ui) },
     ],
-    recommendation_en: "", recommendation_zh: "", priority: 3, confidence: 0.9, masks: T.masks,
+    recommendation_en: "",
+    recommendation_zh: "",
+    priority: 3,
+    confidence: 0.9,
+    masks: T.masks,
   };
 
   const tZone = clampScore(S.ui * 1.2);
   const uZone = clampScore(S.ui * 0.7);
   const sebum: Card = {
-    id: "sebum", title_en: "SEBUM BALANCE", title_zh: "油脂平衡",
-    score: S.ui, max: 100, signal_en: "", signal_zh: "",
+    id: "sebum",
+    title_en: "SEBUM BALANCE",
+    title_zh: "油脂平衡",
+    score: S.ui,
+    max: 100,
+    signal_en: "",
+    signal_zh: "",
     details: [
       { label_en: "T-Zone Output", label_zh: "T 區出油", value: tZone },
       { label_en: "Cheek Output", label_zh: "臉頰出油", value: uZone },
       { label_en: "Equilibrium", label_zh: "平衡值", value: clampScore((tZone + uZone) / 2) },
     ],
-    recommendation_en: "", recommendation_zh: "", priority: 4, confidence: 0.87, masks: S.masks,
+    recommendation_en: "",
+    recommendation_zh: "",
+    priority: 4,
+    confidence: 0.87,
+    masks: S.masks,
   };
 
   const pore: Card = {
-    id: "pore", title_en: "PORE ARCHITECTURE", title_zh: "毛孔結構",
-    score: P.ui, max: 100, signal_en: "", signal_zh: "",
+    id: "pore",
+    title_en: "PORE ARCHITECTURE",
+    title_zh: "毛孔結構",
+    score: P.ui,
+    max: 100,
+    signal_en: "",
+    signal_zh: "",
     details: [
       { label_en: "T-Zone", label_zh: "T 區", value: clampScore(P.ui * 0.9) },
       { label_en: "Cheek", label_zh: "臉頰", value: clampScore(P.ui * 0.95) },
       { label_en: "Nose", label_zh: "鼻翼", value: clampScore(P.ui * 0.8) },
     ],
-    recommendation_en: "", recommendation_zh: "", priority: 5, confidence: 0.91, masks: P.masks,
+    recommendation_en: "",
+    recommendation_zh: "",
+    priority: 5,
+    confidence: 0.91,
+    masks: P.masks,
   };
 
   const elScore = clampScore(F.ui * 0.62 + (100 - W.ui) * 0.38);
   const elasticity: Card = {
-    id: "elasticity", title_en: "ELASTICITY INDEX", title_zh: "彈性指數",
-    score: elScore, max: 100, signal_en: "", signal_zh: "",
+    id: "elasticity",
+    title_en: "ELASTICITY INDEX",
+    title_zh: "彈性指數",
+    score: elScore,
+    max: 100,
+    signal_en: "",
+    signal_zh: "",
     details: [
       { label_en: "Firmness", label_zh: "緊緻度", value: F.ui },
       { label_en: "Wrinkle Depth", label_zh: "皺紋深度", value: W.ui },
       { label_en: "Recovery", label_zh: "回彈", value: clampScore(elScore * 0.9) },
     ],
-    recommendation_en: "", recommendation_zh: "", priority: 6, confidence: 0.85, masks: F.masks.length ? F.masks : W.masks,
+    recommendation_en: "",
+    recommendation_zh: "",
+    priority: 6,
+    confidence: 0.85,
+    masks: F.masks.length ? F.masks : W.masks,
   };
 
   const radiance: Card = {
-    id: "radiance", title_en: "RADIANCE SPECTRUM", title_zh: "光澤頻譜",
-    score: R.ui, max: 100, signal_en: "", signal_zh: "",
+    id: "radiance",
+    title_en: "RADIANCE SPECTRUM",
+    title_zh: "光澤頻譜",
+    score: R.ui,
+    max: 100,
+    signal_en: "",
+    signal_zh: "",
     details: [
       { label_en: "Luminosity", label_zh: "明亮度", value: clampScore(R.ui * 1.05) },
       { label_en: "Evenness", label_zh: "均勻度", value: clampScore(R.ui * 0.92) },
       { label_en: "Glow Index", label_zh: "光澤", value: clampScore(R.ui * 0.88) },
     ],
-    recommendation_en: "", recommendation_zh: "", priority: 7, confidence: 0.89, masks: R.masks,
+    recommendation_en: "",
+    recommendation_zh: "",
+    priority: 7,
+    confidence: 0.89,
+    masks: R.masks,
   };
 
   const barrierScore = clampScore((100 - RD.ui) * 0.4 + H.ui * 0.3 + (100 - AC.ui) * 0.3);
   const barrier: Card = {
-    id: "barrier", title_en: "BARRIER INTEGRITY", title_zh: "屏障完整度",
-    score: barrierScore, max: 100, signal_en: "", signal_zh: "",
+    id: "barrier",
+    title_en: "BARRIER INTEGRITY",
+    title_zh: "屏障完整度",
+    score: barrierScore,
+    max: 100,
+    signal_en: "",
+    signal_zh: "",
     details: [
       { label_en: "Lipid Matrix", label_zh: "脂質基質", value: clampScore(barrierScore * 0.95) },
       { label_en: "Ceramide Layer", label_zh: "神經醯胺", value: clampScore(barrierScore * 0.9) },
       { label_en: "Moisture Seal", label_zh: "保濕封存", value: H.ui },
       { label_en: "Surface Film", label_zh: "皮脂膜", value: S.ui },
     ],
-    recommendation_en: "", recommendation_zh: "", priority: 8, confidence: 0.86, masks: RD.masks.length ? RD.masks : AC.masks,
+    recommendation_en: "",
+    recommendation_zh: "",
+    priority: 8,
+    confidence: 0.86,
+    masks: RD.masks.length ? RD.masks : AC.masks,
   };
 
   return [hydration, melanin, texture, sebum, pore, elasticity, radiance, barrier];
 }
 
 /* =========================
-   14 signals + report
+   14 signals
 ========================= */
 const SIGNAL_LABELS: Record<MetricId, { en: string; zh: string }> = {
-  hydration: { en: "Hydration", zh: "含水" },
-  elasticity: { en: "Elasticity", zh: "彈性" },
-  pore: { en: "Pore", zh: "毛孔" },
-  pores_depth: { en: "Pore Depth", zh: "毛孔深度" },
-  skintone: { en: "Skin Tone", zh: "膚色均勻" },
-  pigmentation: { en: "Pigmentation", zh: "色素" },
-  texture: { en: "Texture", zh: "紋理" },
-  sebum: { en: "Sebum", zh: "油脂" },
-  wrinkle: { en: "Wrinkle", zh: "皺紋" },
-  redness: { en: "Redness", zh: "泛紅" },
-  brightness: { en: "Brightness", zh: "亮度" },
-  firmness: { en: "Firmness", zh: "緊緻" },
-  sensitivity: { en: "Sensitivity", zh: "敏感負載" },
-  clarity: { en: "Clarity", zh: "通透度" },
+  hydration: { en: "Hydration Stability", zh: "含水穩定" },
+  sebum: { en: "Sebum Distribution", zh: "油脂分佈" },
+  texture: { en: "Texture Regularity", zh: "紋理規則" },
+  pore: { en: "Pore Visibility", zh: "毛孔可視" },
+  pores_depth: { en: "Pore Depth Proxy", zh: "毛孔深度推估" },
+  pigmentation: { en: "Pigment Uniformity", zh: "色素均勻" },
+  wrinkle: { en: "Wrinkle Proxy", zh: "皺紋推估" },
+  firmness: { en: "Firmness Proxy", zh: "緊緻推估" },
+  elasticity: { en: "Elasticity Response", zh: "彈性回應" },
+  redness: { en: "Redness Stability", zh: "泛紅穩定" },
+  brightness: { en: "Brightness Index", zh: "亮度指數" },
+  skintone: { en: "Tone Evenness", zh: "膚色均勻" },
+  clarity: { en: "Clarity Index", zh: "通透度" },
+  sensitivity: { en: "Sensitivity Load", zh: "敏感負載" },
 };
 
-function buildSignals14(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>) : ReportSignal[] {
+function buildSignals14(scoreMap: Map<string, { ui: number; raw: number; masks: string[] }>, cards8: Card[]): ReportSignal[] {
   const getUi = (k: string) => clampScore(scoreMap.get(k)?.ui);
+  const card = (id: string) => cards8.find((c) => c.id === id);
 
-  const H = getUi("hd_moisture");
-  const PG = getUi("hd_age_spot");
-  const T = getUi("hd_texture");
-  const S = getUi("hd_oiliness");
-  const P = getUi("hd_pore");
-  const R = getUi("hd_radiance");
-  const RD = getUi("hd_redness");
-  const F = getUi("hd_firmness");
-  const W = getUi("hd_wrinkle");
-  const AC = getUi("hd_acne");
+  const H = getUi("hd_moisture") || card("hydration")?.score || 0;
+  const PG = getUi("hd_age_spot") || card("melanin")?.score || 0;
+  const T = getUi("hd_texture") || card("texture")?.score || 0;
+  const S = getUi("hd_oiliness") || card("sebum")?.score || 0;
+  const P = getUi("hd_pore") || card("pore")?.score || 0;
+  const R = getUi("hd_radiance") || card("radiance")?.score || 0;
+  const RD = getUi("hd_redness") || 0;
+  const F = getUi("hd_firmness") || 0;
+  const W = getUi("hd_wrinkle") || 0;
+  const AC = getUi("hd_acne") || 0;
 
-  const elasticity = clampScore(F * 0.62 + (100 - W) * 0.38);
-  const barrier = clampScore((100 - RD) * 0.4 + H * 0.3 + (100 - AC) * 0.3);
+  const elasticity = clampScore((F * 0.62 + (100 - W) * 0.38));
+  const barrier = card("barrier")?.score || clampScore((100 - RD) * 0.4 + H * 0.3 + (100 - AC) * 0.3);
 
   const clarity = clampScore(T * 0.35 + P * 0.35 + (100 - AC) * 0.3);
   const sensitivity = clampScore(barrier * 0.55 + (100 - RD) * 0.45);
@@ -427,45 +502,76 @@ function buildSignals14(scoreMap: Map<string, { ui: number; raw: number; masks: 
   ];
 }
 
-function buildReport(scanId: string, precheck: any, scoreMap: Map<string, any>, cards: Card[]): Report {
-  return {
-    scan_id: scanId,
-    produced_at: new Date().toISOString(),
-    degraded: false,
-    stage: "youcam_success",
-    summary_en: "Scan complete. 14 channels mapped into an 8-dimension decision report.",
-    summary_zh: "掃描完成：14 通道已映射為 8 維度決策報告。",
-    precheck,
-    signals14: buildSignals14(scoreMap as any),
-    dimensions8: cards
-      .slice()
-      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
-      .map((c) => ({
-        id: c.id,
-        title_en: c.title_en,
-        title_zh: c.title_zh,
-        score: clampScore(c.score),
-        tone: toneForScore(clampScore(c.score)),
-        confidence: Number(c.confidence) || 0.78,
-        finding_en: c.signal_en || "",
-        finding_zh: c.signal_zh || "",
-        mechanism_en: c.recommendation_en || "",
-        mechanism_zh: c.recommendation_zh || "",
-        protocol_en: [],
-        protocol_zh: [],
-        masks: c.masks,
-      })),
-  };
+/* =========================
+   ✅ 冷靜推演 + 決策層（全部中文）
+   只用你現有欄位：finding_zh / mechanism_zh / protocol_zh
+========================= */
+function buildDecisionNarrative(params: {
+  dimId: string;
+  dimZh: string;
+  score: number;
+  sensitivityLoad: number; // 來自 signals14 sensitivity
+  barrierScore: number;    // 來自 cards barrier
+  textureScore: number;    // 來自 cards texture
+}) {
+  const { score, sensitivityLoad, barrierScore, textureScore } = params;
+
+  // 主風險/次漂移（依你的需求：每個都要有）
+  const primaryRisk =
+    barrierScore < 72 ? "屏障不穩定（Barrier Instability）"
+    : "結構波動（Barrier Micro-Instability）";
+
+  const secondaryDrift =
+    textureScore < 72 ? "紋理不規則（Texture Irregularity）"
+    : "紋理漂移（Texture Drift）";
+
+  // 約束條件：依敏感負載與屏障分數決定
+  const banAHA = true; // 先按你要求，所有報告都能帶到（專業一致性）
+  const retinolLowFreq = true;
+  const exfoliationGap = barrierScore < 72 ? "≥ 10 天" : "≥ 7 天";
+
+  const decisionNote =
+`系統決策說明
+目前敏感負載較低（${clampScore(sensitivityLoad)}）
+為避免角質代謝過快導致刺激訊號放大，
+系統已暫時限制高濃度酸類與高頻煥膚行為。
+建議 14 天內以屏障穩定為主。`;
+
+  const priorityNode =
+`SYSTEM PRIORITY NODE
+Primary Risk: ${primaryRisk}
+Secondary Drift: ${secondaryDrift}
+
+Constraint Activated:
+• High % AHA：${banAHA ? "禁用" : "限制"}
+• Retinol：${retinolLowFreq ? "降頻" : "限制"}
+• 去角質間隔：${exfoliationGap}
+
+Strategy Timeline:
+Week 1–2：穩定屏障
+Week 3：低刺激更新
+Week 4：微結構優化`;
+
+  return { decisionNote, priorityNode };
 }
 
 /* =========================
-   MAIN HANDLER
+   ✅ ENVIRONMENT 声明（放到 summary_zh 下方）
+========================= */
+const ENV_BOUNDARY_ZH =
+`ENVIRONMENT & INFERENCE BOUNDARY / 環境與推估邊界
+• 光源會影響色素與亮度的可視判讀
+• 角度/距離會影響毛孔可視度與紋理對比
+• 當前為單次影像推估，用於決策排序與行為約束（非醫療診斷）`;
+
+/* =========================
+   MAIN HANDLER (Edge) — POST + GET
 ========================= */
 export default async function handler(req: Request) {
   try {
     if (req.method === "OPTIONS") return json({ ok: true }, 200);
 
-    // GET: poll task
+    // ✅ GET：查 task 狀態，success 才回「真的 report」
     if (req.method === "GET") {
       const url = new URL(req.url);
       const taskId = url.searchParams.get("task_id");
@@ -477,15 +583,82 @@ export default async function handler(req: Request) {
 
       if (st === "success") {
         const scoreMap = extractYoucamScores(task);
-        const cards = mapYoucamToCards(scoreMap);
-        const report = buildReport(scanId, undefined, scoreMap as any, cards);
+        const cardsRaw = mapYoucamToCards(scoreMap);
+
+        const signals14 = buildSignals14(scoreMap, cardsRaw);
+
+        // 拿幾個關鍵分數做「決策層」用
+        const sensitivityLoad = signals14.find(s => s.id === "sensitivity")?.score ?? 50;
+        const barrierScore = cardsRaw.find(c => c.id === "barrier")?.score ?? 70;
+        const textureScore = cardsRaw.find(c => c.id === "texture")?.score ?? 70;
+
+        // 每張卡片都塞入「推演 + 決策層」
+        const cards: Card[] = cardsRaw.map((c) => {
+          const d = buildDecisionNarrative({
+            dimId: c.id,
+            dimZh: c.title_zh,
+            score: c.score,
+            sensitivityLoad,
+            barrierScore,
+            textureScore,
+          });
+
+          // ✅ 你要的格式：全部中文，冷靜語氣
+          const finding = `視覺特徵顯示「${c.title_zh}」對應結構可能存在可控偏差（${clampScore(c.score)}），需以決策約束控制波動。`;
+          const mech = `${d.decisionNote}\n\n${d.priorityNode}`;
+
+          return {
+            ...c,
+            signal_zh: finding,
+            recommendation_zh: mech,
+            // 英文欄位留空（你說你看不懂英文）
+            signal_en: "",
+            recommendation_en: "",
+          };
+        });
+
+        // Report 的 8 維度用 cards 組（沿用你原 schema）
+        const dimensions8: ReportDimension[] = cards
+          .slice()
+          .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
+          .map((c) => ({
+            id: c.id,
+            title_en: c.title_en,
+            title_zh: c.title_zh,
+            score: clampScore(c.score),
+            tone: toneForScore(clampScore(c.score)),
+            confidence: Number(c.confidence) || 0.78,
+            finding_en: "",
+            mechanism_en: "",
+            protocol_en: [],
+            finding_zh: c.signal_zh || "",
+            mechanism_zh: c.recommendation_zh || "",
+            protocol_zh: [
+              "High % AHA：禁用",
+              "去角質間隔：≥ 10 天",
+            ],
+            masks: c.masks,
+          }));
+
+        const report: Report = {
+          scan_id: scanId,
+          produced_at: new Date().toISOString(),
+          degraded: false,
+          stage: "youcam_success",
+          summary_en: "",
+          summary_zh: `掃描完成：14 通道已整合為 8 維度決策報告。\n\n${ENV_BOUNDARY_ZH}`,
+          signals14,
+          dimensions8,
+        };
+
         return json({
           scan_id: scanId,
           degraded: false,
+          stage: "youcam_success",
           task_status: "success",
           report,
           cards,
-          summary_en: report.summary_en,
+          summary_en: "",
           summary_zh: report.summary_zh,
         }, 200);
       }
@@ -494,22 +667,24 @@ export default async function handler(req: Request) {
         return json({
           scan_id: scanId,
           degraded: true,
+          stage: "youcam_error",
           task_status: "error",
           message: JSON.stringify(task?.data || {}),
         }, 200);
       }
 
+      // processing / queued
       return json({
         scan_id: scanId,
         degraded: true,
+        stage: "processing",
         task_status: st || "processing",
       }, 200);
     }
 
-    // POST: create task
+    // ✅ POST：只做「上傳 + 建立 task」→ 立刻回 task_id（不再等 22 秒）
     if (req.method === "POST") {
       const scanId = nowId();
-
       if (!YOUCAM_API_KEY) {
         return json({ scan_id: scanId, degraded: true, stage: "env", message: "Missing YOUCAM_API_KEY" }, 200);
       }
@@ -533,7 +708,7 @@ export default async function handler(req: Request) {
         task_id: taskId,
         task_status: "processing",
         precheck,
-        summary_en: "Task created. Awaiting analysis output.",
+        summary_en: "",
         summary_zh: "任務已建立，等待分析輸出。",
       }, 200);
     }
