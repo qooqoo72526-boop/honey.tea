@@ -241,7 +241,7 @@ async function youcamPutBinary(putUrl: string, fileBytes: Uint8Array, contentTyp
   const r = await fetch(putUrl, {
     method: "PUT",
     headers: { "Content-Type": contentType },
-    body: new Blob([fileBytes]),
+    body: new Blob([fileBytes.buffer as ArrayBuffer]),
   });
   if (!r.ok) {
     const t = await r.text().catch(() => "");
