@@ -3,6 +3,8 @@ export const config = {
   regions: ["sin1", "hnd1", "icn1"],
 };
 
+declare const process: { env: Record<string, string | undefined> };
+
 type MetricId =
   | "texture" | "pore" | "pigmentation" | "wrinkle"
   | "hydration" | "sebum" | "skintone" | "sensitivity"
@@ -239,7 +241,7 @@ async function youcamPutBinary(putUrl: string, fileBytes: Uint8Array, contentTyp
   const r = await fetch(putUrl, {
     method: "PUT",
     headers: { "Content-Type": contentType },
-    body: fileBytes,
+    body: new Blob([fileBytes]),
   });
   if (!r.ok) {
     const t = await r.text().catch(() => "");
